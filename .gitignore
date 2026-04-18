@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Secrets / environment
+.env
+.env.*
+!.env.example
+
+# Logs
+logs/
+*.log
+
+# Datasets (public — see README for download links)
+models_core/dataset/
+
+# Trained model weights / generated artifacts
+artifacts/checkpoints/
+artifacts/reports/
+models_core/artifacts/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
