@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Dict, Generator, List, Optional
 
 from services.evaluation_service import EvaluationService
 from services.explain_service import ExplainService
@@ -142,6 +142,122 @@ class AnalyzeService:
         }
 
     # ------------------------------------------------------------------
+    # 스트리밍 scalar 입력 경로 (P3-①)
+    # - LLM generate_stream() 의 chunk 를 실시간으로 report_markdown 에 누적
+    # - 사전 단계 (pred/risk/exp/plot) 는 첫 yield 에 모두 포함
+    # - 스트림 종료 후 guardrail/evaluation/report 적용한 최종 dict 를 마지막 yield
+    # ------------------------------------------------------------------
+    def run_stream(self, payload: Dict[str, float]) -> Generator[dict, None, None]:
+        validation = self.validation_service.validate(payload)
+
+        if not validation.is_valid:
+            error_text = self._format_validation_errors(validation.issues)
+            yield {
+                "validation_text": error_text,
+                "summary_text": "입력 검증 실패",
+                "explanation_text": "",
+                "feature_plot": None,
+                "sensor_plot": None,
+                "report_markdown": f"# Validation Error\n\n{error_text}",
+                "raw_result": None,
+                "alert_text": "N/A",
+            }
+            return
+
+        normalized_payload = validation.normalized_payload
+        pred = self.pdm_service.predict(normalized_payload)
+        risk = self.risk_service.fuse(pred)
+        pred.risk_score = risk.risk_score
+        pred.risk_level = risk.risk_level
+
+        exp = self.explain_service.explain(normalized_payload, pred)
+
+        feature_plot = self.plot_service.build_feature_importance(exp)
+        sensor_plot = self.plot_service.build_sensor_snapshot(normalized_payload)
+
+        summary_text = self._build_summary_text(pred, risk)
+        explanation_text = self._build_scalar_explanation_text(exp)
+        alert_text = (
+            "ALERT TRIGGERED"
+            if str(risk.risk_level).upper() in {"CRITICAL", "WARNING"}
+            else "NO ALERT"
+        )
+
+        # 첫 yield: LLM 생성 전까지 완성된 정보를 UI 에 즉시 표시
+        yield {
+            "validation_text": "정상",
+            "summary_text": summary_text,
+            "explanation_text": explanation_text,
+            "feature_plot": feature_plot,
+            "sensor_plot": sensor_plot,
+            "report_markdown": "## LLM 분석 코멘트 (생성 중...)\n\n",
+            "raw_result": None,
+            "alert_text": alert_text,
+        }
+
+        # 토큰 스트리밍
+        gen = self.llm_service.generate_stream(normalized_payload, pred, exp, risk)
+        accumulated = ""
+        llm_result = None
+        try:
+            while True:
+                chunk = next(gen)
+                accumulated += chunk
+                yield {
+                    "validation_text": "정상",
+                    "summary_text": summary_text,
+                    "explanation_text": explanation_text,
+                    "feature_plot": feature_plot,
+                    "sensor_plot": sensor_plot,
+                    "report_markdown": (
+                        "## LLM 분석 코멘트 (생성 중...)\n\n" + accumulated
+                    ),
+                    "raw_result": None,
+                    "alert_text": alert_text,
+                }
+        except StopIteration as stop:
+            llm_result = stop.value
+
+        # 스트림 종료 후: guardrail → evaluation → 최종 report
+        llm_result = self.guardrail_service.validate(
+            llm_result=llm_result, pred=pred, exp=exp, risk=risk,
+        )
+        evaluation = self.evaluation_service.evaluate(llm_result, pred=pred, risk=risk)
+
+        report_markdown = self.report_service.generate(
+            payload=normalized_payload,
+            validation=validation,
+            pred=pred,
+            exp=exp,
+            risk=risk,
+            llm=llm_result,
+            evaluation=evaluation,
+        )
+
+        result = AnalysisResult(
+            validation=validation,
+            prediction=pred,
+            explanation=exp,
+            risk=risk,
+            llm=llm_result,
+            evaluation=evaluation,
+            summary_text=summary_text,
+            explanation_text=explanation_text,
+            report_markdown=report_markdown,
+        )
+
+        yield {
+            "validation_text": "정상",
+            "summary_text": summary_text,
+            "explanation_text": explanation_text,
+            "feature_plot": feature_plot,
+            "sensor_plot": sensor_plot,
+            "report_markdown": report_markdown,
+            "raw_result": result.to_dict(),
+            "alert_text": alert_text,
+        }
+
+    # ------------------------------------------------------------------
     # 새 LSTM sequence 입력 경로
     # ------------------------------------------------------------------
     def run_lstm(
@@ -276,6 +392,154 @@ class AnalyzeService:
             "alert_text": "ALERT TRIGGERED"
             if str(risk.risk_level).upper() in {"CRITICAL", "WARNING"}
             else "NO ALERT",
+        }
+
+    # ------------------------------------------------------------------
+    # 스트리밍 LSTM sequence 입력 경로 (P3-①)
+    # ------------------------------------------------------------------
+    def run_lstm_stream(
+        self,
+        sequence: List[List[float]],
+        feature_names: Optional[List[str]] = None,
+        asset_id: str = "UNKNOWN",
+        dataset_key: Optional[str] = None,
+    ) -> Generator[dict, None, None]:
+        resolved_dataset_key = dataset_key or self.dataset_key
+
+        lstm_payload = LSTMSequenceInput(
+            sequence=sequence,
+            feature_names=feature_names,
+            asset_id=asset_id,
+            dataset_key=resolved_dataset_key,
+        )
+
+        validation = self.validation_service.validate_lstm_sequence_payload(lstm_payload)
+
+        if not validation.is_valid:
+            error_text = self._format_validation_errors(validation.issues)
+            yield {
+                "validation_text": error_text,
+                "summary_text": "LSTM 입력 검증 실패",
+                "explanation_text": "",
+                "feature_plot": None,
+                "sensor_plot": None,
+                "report_markdown": f"# LSTM Validation Error\n\n{error_text}",
+                "raw_result": None,
+                "alert_text": "N/A",
+            }
+            return
+
+        pred = self.pdm_service.predict_lstm_sequence(
+            sequence=validation.normalized_sequence,
+            feature_names=validation.feature_names,
+        )
+        risk = self.risk_service.fuse(pred)
+        pred.risk_score = risk.risk_score
+        pred.risk_level = risk.risk_level
+
+        explain_payload = self._build_lstm_explain_payload(
+            sequence=validation.normalized_sequence,
+            feature_names=validation.feature_names,
+        )
+        exp = self.explain_service.explain_lstm_sequence(
+            sequence=validation.normalized_sequence,
+            feature_names=validation.feature_names,
+            top_contributors=pred.top_contributors,
+            predicted_label=pred.predicted_label,
+            failure_probability=pred.failure_probability,
+            rul_norm=pred.rul_norm,
+        )
+
+        feature_plot = self.plot_service.build_lstm_feature_importance(exp)
+        sensor_plot = self.plot_service.build_lstm_sequence_snapshot(
+            sequence=validation.normalized_sequence,
+            feature_names=validation.feature_names,
+        )
+
+        summary_text = self._build_summary_text(pred, risk)
+        explanation_text = exp.explanation_text
+        validation_text = (
+            f"정상\n"
+            f"- dataset_key: {validation.dataset_key}\n"
+            f"- timesteps: {validation.timesteps}\n"
+            f"- feature_dim: {validation.feature_dim}\n"
+            f"- asset_id: {asset_id}"
+        )
+        alert_text = (
+            "ALERT TRIGGERED"
+            if str(risk.risk_level).upper() in {"CRITICAL", "WARNING"}
+            else "NO ALERT"
+        )
+
+        yield {
+            "validation_text": validation_text,
+            "summary_text": summary_text,
+            "explanation_text": explanation_text,
+            "feature_plot": feature_plot,
+            "sensor_plot": sensor_plot,
+            "report_markdown": "## LLM 분석 코멘트 (생성 중...)\n\n",
+            "raw_result": None,
+            "alert_text": alert_text,
+        }
+
+        gen = self.llm_service.generate_stream(explain_payload, pred, exp, risk)
+        accumulated = ""
+        llm_result = None
+        try:
+            while True:
+                chunk = next(gen)
+                accumulated += chunk
+                yield {
+                    "validation_text": validation_text,
+                    "summary_text": summary_text,
+                    "explanation_text": explanation_text,
+                    "feature_plot": feature_plot,
+                    "sensor_plot": sensor_plot,
+                    "report_markdown": (
+                        "## LLM 분석 코멘트 (생성 중...)\n\n" + accumulated
+                    ),
+                    "raw_result": None,
+                    "alert_text": alert_text,
+                }
+        except StopIteration as stop:
+            llm_result = stop.value
+
+        llm_result = self.guardrail_service.validate(
+            llm_result=llm_result, pred=pred, exp=exp, risk=risk,
+        )
+        evaluation = self.evaluation_service.evaluate(llm_result, pred=pred, risk=risk)
+
+        report_markdown = self._generate_lstm_report_markdown(
+            asset_id=asset_id,
+            validation=validation,
+            pred=pred,
+            exp=exp,
+            risk=risk,
+            llm=llm_result,
+            evaluation=evaluation,
+        )
+
+        result = LSTMAnalysisResult(
+            validation=validation,
+            prediction=pred,
+            explanation=exp,
+            risk=risk,
+            llm=llm_result,
+            evaluation=evaluation,
+            summary_text=summary_text,
+            explanation_text=explanation_text,
+            report_markdown=report_markdown,
+        )
+
+        yield {
+            "validation_text": validation_text,
+            "summary_text": summary_text,
+            "explanation_text": explanation_text,
+            "feature_plot": feature_plot,
+            "sensor_plot": sensor_plot,
+            "report_markdown": report_markdown,
+            "raw_result": result.to_dict(),
+            "alert_text": alert_text,
         }
 
     # ------------------------------------------------------------------

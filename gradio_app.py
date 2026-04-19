@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Generator, List, Tuple
 
 import gradio as gr
 
@@ -447,6 +447,109 @@ def run_analysis(
 
 
 # ---------------------------------------------------------------------
+# Streaming 실행 함수 (ENABLE_LLM_STREAM=1 시 사용)
+# ---------------------------------------------------------------------
+_STREAM_OUTPUT_KEYS = (
+    "validation_text",
+    "summary_text",
+    "feature_plot",
+    "sensor_plot",
+    "explanation_text",
+    "report_markdown",
+    "raw_result",
+    "alert_text",
+)
+
+
+def _partial_to_tuple(partial: Dict[str, Any]) -> Tuple[str, str, Any, Any, str, str, str, str]:
+    raw = partial.get("raw_result")
+    raw_json = _safe_json(raw) if raw is not None else ""
+    return (
+        partial.get("validation_text", ""),
+        partial.get("summary_text", ""),
+        partial.get("feature_plot", None),
+        partial.get("sensor_plot", None),
+        partial.get("explanation_text", ""),
+        partial.get("report_markdown", ""),
+        raw_json,
+        partial.get("alert_text", "N/A"),
+    )
+
+
+def run_analysis_stream(
+    mode: str,
+    dataset_key: str,
+    risk_method: str,
+    air_temperature_k: float,
+    process_temperature_k: float,
+    rotational_speed_rpm: float,
+    torque_nm: float,
+    tool_wear_min: float,
+) -> Generator[Tuple[str, str, Any, Any, str, str, str, str], None, None]:
+    """AnalyzeService.run_stream() 를 소비하여 Gradio 출력 tuple 을 점진 yield."""
+    payload = {
+        "air_temperature_k": air_temperature_k,
+        "process_temperature_k": process_temperature_k,
+        "rotational_speed_rpm": rotational_speed_rpm,
+        "torque_nm": torque_nm,
+        "tool_wear_min": tool_wear_min,
+    }
+
+    try:
+        service = AnalyzeService(
+            mode=mode, risk_method=risk_method, dataset_key=dataset_key,
+        )
+        for partial in service.run_stream(payload):
+            yield _partial_to_tuple(partial)
+    except NotImplementedError as e:
+        msg = f"현재 선택한 dataset_key는 이 입력 폼으로는 실행할 수 없습니다.\n\n{e}"
+        yield (msg, "실행 불가", None, None, "", f"# Execution Error\n\n{msg}", "{}", "N/A")
+    except FileNotFoundError as e:
+        msg = f"체크포인트 또는 필수 파일이 없습니다.\n\n{e}"
+        yield (msg, "실행 실패", None, None, "", f"# File Error\n\n{msg}", "{}", "N/A")
+    except Exception as e:
+        msg = f"분석 중 예외가 발생했습니다.\n\n{type(e).__name__}: {e}"
+        yield (msg, "실행 실패", None, None, "", f"# Runtime Error\n\n{msg}", "{}", "N/A")
+
+
+def run_lstm_analysis_stream(
+    mode: str,
+    dataset_key: str,
+    risk_method: str,
+    asset_id: str,
+    sequence_text: str,
+    feature_names_text: str,
+) -> Generator[Tuple[str, str, Any, Any, str, str, str, str], None, None]:
+    """AnalyzeService.run_lstm_stream() 을 소비하여 Gradio 출력 tuple 을 점진 yield."""
+    try:
+        sequence = parse_sequence_text(sequence_text)
+        feature_names = parse_feature_names_text(feature_names_text)
+
+        service = AnalyzeService(
+            mode=mode, risk_method=risk_method, dataset_key=dataset_key,
+        )
+        for partial in service.run_lstm_stream(
+            sequence=sequence,
+            feature_names=feature_names,
+            asset_id=asset_id or "UNKNOWN",
+            dataset_key=dataset_key,
+        ):
+            yield _partial_to_tuple(partial)
+    except ValueError as e:
+        msg = f"LSTM 입력 파싱 오류입니다.\n\n{e}"
+        yield (msg, "실행 실패", None, None, "", f"# Input Parse Error\n\n{msg}", "{}", "N/A")
+    except NotImplementedError as e:
+        msg = f"현재 LSTM 설정으로는 실행할 수 없습니다.\n\n{e}"
+        yield (msg, "실행 불가", None, None, "", f"# Execution Error\n\n{msg}", "{}", "N/A")
+    except FileNotFoundError as e:
+        msg = f"LSTM 체크포인트 또는 필수 파일이 없습니다.\n\n{e}"
+        yield (msg, "실행 실패", None, None, "", f"# File Error\n\n{msg}", "{}", "N/A")
+    except Exception as e:
+        msg = f"LSTM 분석 중 예외가 발생했습니다.\n\n{type(e).__name__}: {e}"
+        yield (msg, "실행 실패", None, None, "", f"# Runtime Error\n\n{msg}", "{}", "N/A")
+
+
+# ---------------------------------------------------------------------
 # 새 LSTM Analysis 실행 함수
 # ---------------------------------------------------------------------
 def run_lstm_analysis(
@@ -578,6 +681,10 @@ def save_lstm_report(report_markdown: str, dataset_key: str, asset_id: str) -> T
 # ---------------------------------------------------------------------
 # Gradio UI 정의
 # ---------------------------------------------------------------------
+_ENABLE_LLM_STREAM = os.getenv("ENABLE_LLM_STREAM", "0") == "1"
+_analysis_handler = run_analysis_stream if _ENABLE_LLM_STREAM else run_analysis
+_lstm_analysis_handler = run_lstm_analysis_stream if _ENABLE_LLM_STREAM else run_lstm_analysis
+
 with gr.Blocks(title="HybridPdM") as demo:
     gr.Markdown("# HybridPdM")
     gr.Markdown(
@@ -651,7 +758,7 @@ with gr.Blocks(title="HybridPdM") as demo:
             )
 
             run_btn.click(
-                fn=run_analysis,
+                fn=_analysis_handler,
                 inputs=[
                     mode_dd,
                     dataset_dd,
@@ -763,7 +870,7 @@ with gr.Blocks(title="HybridPdM") as demo:
             )
             
             lstm_run_btn.click(
-                fn=run_lstm_analysis,
+                fn=_lstm_analysis_handler,
                 inputs=[
                     lstm_mode_dd,
                     lstm_dataset_dd,
