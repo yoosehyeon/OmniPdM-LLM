@@ -98,6 +98,55 @@ def _extract_report_text(report_markdown: str) -> str:
     return report_markdown if isinstance(report_markdown, str) else ""
 
 
+def list_saved_reports(limit: int = 50) -> List[List[str]]:
+    """config.REPORT_DIR 의 `*_report_*.md` 목록 (최신순)."""
+    report_dir = config.REPORT_DIR
+    report_dir.mkdir(parents=True, exist_ok=True)
+
+    md_files = sorted(
+        report_dir.glob("*_report_*.md"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )[:limit]
+
+    from datetime import datetime as _dt
+    rows: List[List[str]] = []
+    for path in md_files:
+        stat = path.stat()
+        mtime_str = _dt.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+        rows.append([path.name, mtime_str, f"{stat.st_size:,}"])
+    return rows
+
+
+def load_report_preview(evt: gr.SelectData) -> Tuple[str, str, Any]:
+    """
+    Report tab Dataframe 행 클릭 시: markdown + raw json + 다운로드 파일 반환.
+    """
+    try:
+        row_idx = evt.index[0] if isinstance(evt.index, (list, tuple)) else evt.index
+        rows = list_saved_reports()
+        if not rows or row_idx is None or row_idx >= len(rows):
+            return "선택된 파일이 없습니다.", "{}", None
+
+        filename = rows[row_idx][0]
+        md_path = config.REPORT_DIR / filename
+
+        if not md_path.exists():
+            return f"파일을 찾을 수 없습니다: {filename}", "{}", None
+
+        markdown_text = md_path.read_text(encoding="utf-8")
+
+        json_path = md_path.with_suffix(".json")
+        if json_path.exists():
+            raw_json = json_path.read_text(encoding="utf-8")
+        else:
+            raw_json = "(해당 리포트의 raw JSON 이 없습니다. 구버전 저장본일 수 있습니다.)"
+
+        return markdown_text, raw_json, str(md_path)
+    except Exception as e:
+        return f"리포트 로드 실패: {type(e).__name__}: {e}", "{}", None
+
+
 def _latest_pipeline_reports(limit: int = 5) -> List[List[str]]:
     """
     models_core/main.py가 저장한 pipeline_report_*.json 목록을 최근순으로 보여준다.
@@ -980,9 +1029,41 @@ with gr.Blocks(title="HybridPdM") as demo:
         # ============================================================
         with gr.Tab("Report"):
             gr.Markdown(
-                "Analysis 탭 실행 후 생성된 Markdown report와 raw JSON은 해당 탭의 하단에서 확인할 수 있습니다.\n\n"
-                "LSTM Analysis 탭도 동일하게 탭 하단에서 report / raw JSON을 확인할 수 있습니다.\n\n"
-                "이 탭은 추후 보고서 저장/다운로드 기능을 확장하기 위한 자리입니다."
+                "분석 실행 시 자동 저장된 리포트 목록입니다. 행을 클릭하면 미리보기와 다운로드가 가능합니다."
+            )
+
+            with gr.Row():
+                reports_refresh_btn = gr.Button("Refresh")
+                reports_dir_md = gr.Markdown(
+                    value=f"- 저장 위치: `{config.REPORT_DIR}`"
+                )
+
+            saved_reports_df = gr.Dataframe(
+                headers=["File", "Saved At", "Size(bytes)"],
+                datatype=["str", "str", "str"],
+                label="Saved Reports",
+                value=list_saved_reports(),
+                interactive=False,
+            )
+
+            with gr.Row():
+                with gr.Column():
+                    saved_report_md = gr.Markdown(label="Report Preview")
+                with gr.Column():
+                    saved_report_json = gr.Code(label="Raw Result JSON", language="json")
+
+            saved_report_file = gr.File(label="Download Markdown")
+
+            reports_refresh_btn.click(
+                fn=list_saved_reports,
+                inputs=[],
+                outputs=[saved_reports_df],
+            )
+
+            saved_reports_df.select(
+                fn=load_report_preview,
+                inputs=[],
+                outputs=[saved_report_md, saved_report_json, saved_report_file],
             )
 
     gr.Markdown(

@@ -128,17 +128,27 @@ class AnalyzeService:
             report_markdown=report_markdown,
         )
 
+        raw_result = result.to_dict()
+        saved_md, _ = self._auto_save(
+            report_markdown=report_markdown,
+            raw_result=raw_result,
+            dataset_key=self.dataset_key,
+            asset_id="UNKNOWN",
+            prefix="scalar_report",
+        )
+
         return {
-            "validation_text": "정상",
+            "validation_text": self._compose_validation_text("정상", saved_md),
             "summary_text": result.summary_text,
             "explanation_text": result.explanation_text,
             "feature_plot": feature_plot,
             "sensor_plot": sensor_plot,
             "report_markdown": report_markdown,
-            "raw_result": result.to_dict(),
+            "raw_result": raw_result,
             "alert_text": "ALERT TRIGGERED"
             if str(risk.risk_level).upper() in {"CRITICAL", "WARNING"}
             else "NO ALERT",
+            "saved_report_path": saved_md,
         }
 
     # ------------------------------------------------------------------
@@ -246,15 +256,25 @@ class AnalyzeService:
             report_markdown=report_markdown,
         )
 
+        raw_result = result.to_dict()
+        saved_md, _ = self._auto_save(
+            report_markdown=report_markdown,
+            raw_result=raw_result,
+            dataset_key=self.dataset_key,
+            asset_id="UNKNOWN",
+            prefix="scalar_report",
+        )
+
         yield {
-            "validation_text": "정상",
+            "validation_text": self._compose_validation_text("정상", saved_md),
             "summary_text": summary_text,
             "explanation_text": explanation_text,
             "feature_plot": feature_plot,
             "sensor_plot": sensor_plot,
             "report_markdown": report_markdown,
-            "raw_result": result.to_dict(),
+            "raw_result": raw_result,
             "alert_text": alert_text,
+            "saved_report_path": saved_md,
         }
 
     # ------------------------------------------------------------------
@@ -374,15 +394,24 @@ class AnalyzeService:
         )
 
         raw_result = result.to_dict()
-        
+        saved_md, _ = self._auto_save(
+            report_markdown=report_markdown,
+            raw_result=raw_result,
+            dataset_key=resolved_dataset_key,
+            asset_id=asset_id,
+            prefix="lstm_report",
+        )
+
+        base_validation_text = (
+            f"정상\n"
+            f"- dataset_key: {validation.dataset_key}\n"
+            f"- timesteps: {validation.timesteps}\n"
+            f"- feature_dim: {validation.feature_dim}\n"
+            f"- asset_id: {asset_id}"
+        )
+
         return {
-            "validation_text": (
-                f"정상\n"
-                f"- dataset_key: {validation.dataset_key}\n"
-                f"- timesteps: {validation.timesteps}\n"
-                f"- feature_dim: {validation.feature_dim}\n"
-                f"- asset_id: {asset_id}"
-            ),
+            "validation_text": self._compose_validation_text(base_validation_text, saved_md),
             "summary_text": result.summary_text,
             "explanation_text": result.explanation_text,
             "feature_plot": feature_plot,
@@ -392,6 +421,7 @@ class AnalyzeService:
             "alert_text": "ALERT TRIGGERED"
             if str(risk.risk_level).upper() in {"CRITICAL", "WARNING"}
             else "NO ALERT",
+            "saved_report_path": saved_md,
         }
 
     # ------------------------------------------------------------------
@@ -531,16 +561,55 @@ class AnalyzeService:
             report_markdown=report_markdown,
         )
 
+        raw_result = result.to_dict()
+        saved_md, _ = self._auto_save(
+            report_markdown=report_markdown,
+            raw_result=raw_result,
+            dataset_key=resolved_dataset_key,
+            asset_id=asset_id,
+            prefix="lstm_report",
+        )
+
         yield {
-            "validation_text": validation_text,
+            "validation_text": self._compose_validation_text(validation_text, saved_md),
             "summary_text": summary_text,
             "explanation_text": explanation_text,
             "feature_plot": feature_plot,
             "sensor_plot": sensor_plot,
             "report_markdown": report_markdown,
-            "raw_result": result.to_dict(),
+            "raw_result": raw_result,
             "alert_text": alert_text,
+            "saved_report_path": saved_md,
         }
+
+    # ------------------------------------------------------------------
+    # Helper: auto-save + validation 텍스트 조합
+    # ------------------------------------------------------------------
+    def _auto_save(
+        self,
+        report_markdown: str,
+        raw_result: Optional[Dict],
+        dataset_key: str,
+        asset_id: str,
+        prefix: str,
+    ) -> tuple[Optional[str], Optional[str]]:
+        try:
+            return self.report_service.save_report_bundle(
+                report_markdown=report_markdown,
+                raw_result=raw_result,
+                dataset_key=dataset_key,
+                asset_id=asset_id,
+                prefix=prefix,
+            )
+        except Exception:
+            return None, None
+
+    @staticmethod
+    def _compose_validation_text(base: str, saved_md: Optional[str]) -> str:
+        if not saved_md:
+            return base
+        from pathlib import Path as _P
+        return f"{base}\n- saved: {_P(saved_md).name}"
 
     # ------------------------------------------------------------------
     # Helper: 기존 summary

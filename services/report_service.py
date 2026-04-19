@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
 
+from models_core import config
 from services.schemas import (
     EvaluationResult,
     ExplanationResult,
@@ -86,18 +89,40 @@ class ReportService:
         asset_id: str = "UNKNOWN",
         prefix: str = "hybridpdm_report",
     ) -> str:
-        """
-        Markdown 보고서를 artifacts/reports 아래에 저장하고 파일 경로를 반환한다.
-        """
-        reports_dir = Path("artifacts") / "reports"
-        reports_dir.mkdir(parents=True, exist_ok=True)
-        
-        safe_dataset = str(dataset_key).replace("/", "_").replace("\\", "_").strip()or "unknown"
-        safe_asset = str(asset_id).replace("/", "_").replace("\\", "_").strip() or "UNKNOWN"
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-        filename = f"{prefix}_{safe_dataset}_{safe_asset}_{timestamp}.md"
-        save_path = reports_dir / filename
-        
+        """Markdown 보고서를 config.REPORT_DIR 아래에 저장하고 파일 경로를 반환한다."""
+        save_path, _ = self._build_save_paths(prefix, dataset_key, asset_id)
         save_path.write_text(report_markdown, encoding="utf-8")
         return str(save_path)
+
+    def save_report_bundle(
+        self,
+        report_markdown: str,
+        raw_result: Optional[Dict[str, Any]],
+        dataset_key: str,
+        asset_id: str = "UNKNOWN",
+        prefix: str = "hybridpdm_report",
+    ) -> Tuple[str, Optional[str]]:
+        """Markdown + raw JSON 을 같은 타임스탬프로 쌍 저장. (md_path, json_path) 반환."""
+        md_path, json_path = self._build_save_paths(prefix, dataset_key, asset_id)
+        md_path.write_text(report_markdown, encoding="utf-8")
+        json_path_str: Optional[str] = None
+        if raw_result is not None:
+            try:
+                json_path.write_text(
+                    json.dumps(raw_result, ensure_ascii=False, indent=2, default=str),
+                    encoding="utf-8",
+                )
+                json_path_str = str(json_path)
+            except Exception:
+                json_path_str = None
+        return str(md_path), json_path_str
+
+    @staticmethod
+    def _build_save_paths(prefix: str, dataset_key: str, asset_id: str) -> Tuple[Path, Path]:
+        reports_dir = Path(config.REPORT_DIR)
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        safe_dataset = str(dataset_key).replace("/", "_").replace("\\", "_").strip() or "unknown"
+        safe_asset = str(asset_id).replace("/", "_").replace("\\", "_").strip() or "UNKNOWN"
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        stem = f"{prefix}_{safe_dataset}_{safe_asset}_{timestamp}"
+        return reports_dir / f"{stem}.md", reports_dir / f"{stem}.json"
