@@ -27,7 +27,9 @@ models_core/dataset/
 # Trained model weights / generated artifacts
 artifacts/checkpoints/
 artifacts/reports/
-models_core/artifacts/
+models_core/artifacts/reports/
+# models_core 체크포인트: 최신(_050422) 버전만 추적, 구버전은 제외
+models_core/artifacts/checkpoints/*_045950.*
 
 # IDE
 .vscode/
