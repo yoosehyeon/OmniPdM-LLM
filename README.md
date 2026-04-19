@@ -153,6 +153,7 @@ cp .env.example .env
 | `PROMPT_DIR` | 시스템 프롬프트 디렉터리 | `prompts` |
 | `ENABLE_LLM_JUDGE` | `1` 설정 시 LLM-as-Judge 활성화 (추가 API 호출) | `0` |
 | `ENABLE_LLM_STREAM` | `1` 설정 시 UI 계층에서 `generate_stream()` 사용 (서비스 메서드는 값 무관하게 항상 제공) | `0` |
+| `CHECKPOINT_REPO` | 런타임에 체크포인트를 pull 할 HF Model Hub repo. 로컬 `models_core/artifacts/checkpoints/` 에 동일 stem 이 있으면 우선 사용 | `yusehyeon/hybridpdm-checkpoints` |
 
 > LLM 프로바이더로 **Groq (Llama 3.3 70B Versatile)** 를 사용합니다. OpenAI 호환 endpoint 를 통해 `openai` SDK 그대로 호출하며, 무료 티어 한도(30 RPM / ~14.4K RPD) 는 본 프로젝트의 시연 수요를 충분히 감당합니다. API 키는 [Groq Cloud Console](https://console.groq.com/keys) 에서 발급.
 
@@ -201,9 +202,14 @@ Space 의 `Settings → Variables and secrets → New secret` 메뉴에서 다�
 
 ### 3. 체크포인트 전략
 
-- 본 Space 는 기본적으로 `Analysis` 탭의 `lite` 모드 (규칙 기반) 로 동작하며 체크포인트가 필요 없습니다.
-- `full` 모드 또는 `LSTM Analysis` 탭을 Space 상에서 실행하려면 체크포인트가 필요합니다. 저장소 크기 제약상 **HF Hub 모델 리포를 별도로 두고 `huggingface_hub.snapshot_download` 로 런타임 다운로드** 하는 전략을 권장합니다.
-- 현재 엔트리 구성에서는 체크포인트가 없어도 Space 가 정상 기동되며, `lite` 모드에서 LLM 파이프라인(P1/P2/P3-①) 전체를 시연할 수 있습니다.
+Space 저장소는 binary 를 포함할 수 없으므로 체크포인트는 **별도 HF Model Hub repo** 에서 런타임에 pull 합니다.
+
+- 기본 repo: [`yusehyeon/hybridpdm-checkpoints`](https://huggingface.co/yusehyeon/hybridpdm-checkpoints) (public, model type)
+- 포함 파일: 6개 모델의 `*.pt` / `*.pkl` 가중치 + `*_meta.json` (feature_names / feature_dim / task 등 데이터셋 의존성 제거용 메타) + 학습 history JSON
+- 로드 순서: 로컬 `models_core/artifacts/checkpoints/<stem>*.{pt,pkl}` → 없으면 `huggingface_hub.hf_hub_download(CHECKPOINT_REPO, …)` fallback (캐시: `~/.cache/huggingface/hub/`)
+- 다른 repo 로 교체하려면 Space Secret 에 `CHECKPOINT_REPO=<org>/<repo>` 추가
+- 업로드/재생성 스크립트: [scripts/export_checkpoint_meta.py](scripts/export_checkpoint_meta.py) (데이터셋 있는 개발 환경에서 meta.json 추출) + [scripts/upload_checkpoints_to_hf.py](scripts/upload_checkpoints_to_hf.py) (repo 생성 + 업로드)
+- 결과: `Analysis` / `LSTM Analysis` / `Diagnostics` / `Model Status` 4 탭 모두 Space 에서 정상 동작 (첫 추론 시 cold-pull 지연 수 초 발생)
 
 ### 4. 진입 파일
 
@@ -219,6 +225,8 @@ Space 가 불안정하거나 빌드 오류가 장기화될 경우 백업으로 *
 ## 데이터셋
 
 본 프로젝트는 아래 공개 데이터셋을 사용합니다. 저장소에는 포함되어 있지 않으므로 직접 다운로드하여 `models_core/dataset/` 하위에 배치해야 합니다.
+
+> **배포 환경 (HF Space) 에서는 데이터셋이 필요 없습니다.** 체크포인트와 함께 업로드된 `*_meta.json` 이 feature 정의를 대신 제공합니다. 데이터셋은 **재학습 / meta.json 재생성 시에만** 필요합니다.
 
 | 데이터셋 | 설명 | 다운로드 |
 |---------|------|---------|
