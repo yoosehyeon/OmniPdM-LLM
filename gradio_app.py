@@ -134,12 +134,25 @@ def get_model_status() -> List[List[str]]:
         ("LSTM (N-CMAPSS)", "ncmapss_lstm", ".pt"),
     ]
 
+    # HF Model Hub 에 어떤 체크포인트가 있는지 1회 조회 (Space 환경에서는 로컬이 비어 있음).
+    hub_files: List[str] = []
+    try:
+        from huggingface_hub import list_repo_files
+
+        hub_files = list_repo_files(config.CHECKPOINT_REPO, repo_type="model")
+    except Exception:
+        hub_files = []
+
     rows: List[List[str]] = []
     for label, key, ext in model_list:
         found = sorted(config.CHECKPOINT_DIR.glob(f"{key}*{ext}"))
         if found:
-            latest = found[-1]
-            rows.append([label, "Ready", latest.name])
+            rows.append([label, "Ready", found[-1].name])
+            continue
+
+        hub_match = sorted(f for f in hub_files if f.startswith(f"{key}_") and f.endswith(ext))
+        if hub_match:
+            rows.append([label, "Ready (HF)", hub_match[-1]])
         else:
             rows.append([label, "N/A", "-"])
     return rows

@@ -11,7 +11,6 @@ import torch
 from services.schemas import PredictionResult
 
 from models_core import config
-from models_core import data_pipeline as dp
 from models_core import models
 
 
@@ -120,88 +119,126 @@ class PdmService:
         ai4i_gbdt는 pickle 모델을 사용한다.
         """
         if self.dataset_key == "ai4i_cnn":
-            data = dp.load_ai4i_cnn()
-            feat_names = data["meta"]["feature_names"]
+            ckpt_path = self._find_checkpoint("ai4i_cnn", ".pt")
+            meta = self._load_checkpoint_meta(ckpt_path)
+            feat_names = meta["feature_names"]
             reorder = models.build_reorder_index(feat_names, models.AI4I_REORDER_NAMES)
 
             model = models.build_model(
                 "cnn_tabular",
                 in_channels=1,
-                seq_len=data["meta"]["feature_dim"],
+                seq_len=meta["feature_dim"],
                 n_classes=1,
                 dropout=config.CNN_CFG["dropout"],
                 reorder_index=reorder,
                 expected_feature_names=feat_names,
             )
-            ckpt_path = self._find_checkpoint("ai4i_cnn", ".pt")
             state = torch.load(ckpt_path, map_location=self.device)
             model.load_state_dict(state)
             model.to(self.device).eval()
 
             self._torch_model = model
-            self._meta = data["meta"]
+            self._meta = meta
             return
 
         if self.dataset_key == "ai4i_gbdt":
             ckpt_path = self._find_checkpoint("ai4i_gbdt", ".pkl")
             with open(ckpt_path, "rb") as f:
                 self._sk_model = pickle.load(f)
-
-            data = dp.load_ai4i_gbdt()
-            self._meta = data["meta"]
+            self._meta = self._load_checkpoint_meta(ckpt_path)
             return
 
         if self.dataset_key == "hydraulic_ae":
-            data = dp.LOADERS["hydraulic_ae"]()
+            ckpt_path = self._find_checkpoint("hydraulic_ae", ".pt")
+            meta = self._load_checkpoint_meta(ckpt_path)
             model = models.build_model(
                 "ae",
-                input_dim=data["meta"]["feature_dim"],
+                input_dim=meta["feature_dim"],
                 latent_dim=config.AE_CFG["latent_dim"],
             )
-            ckpt_path = self._find_checkpoint("hydraulic_ae", ".pt")
             state = torch.load(ckpt_path, map_location=self.device)
             model.load_state_dict(state)
             model.to(self.device).eval()
 
             self._torch_model = model
-            self._meta = data["meta"]
+            self._meta = meta
             return
 
         if self.dataset_key in {"cmapss_lstm", "ncmapss_lstm"}:
-            data = dp.LOADERS[self.dataset_key]()
+            ckpt_path = self._find_checkpoint(self.dataset_key, ".pt")
+            meta = self._load_checkpoint_meta(ckpt_path)
             cfg = config.LSTM_CFG if self.dataset_key == "cmapss_lstm" else config.NCMAPSS_LSTM_CFG
 
             model = models.build_model(
                 "lstm",
-                input_dim=data["meta"]["feature_dim"],
+                input_dim=meta["feature_dim"],
                 hidden=cfg["hidden"],
                 num_layers=cfg["num_layers"],
                 dropout=cfg["dropout"],
                 input_format="BFL",
             )
-            ckpt_path = self._find_checkpoint(self.dataset_key, ".pt")
             state = torch.load(ckpt_path, map_location=self.device)
             model.load_state_dict(state)
             model.to(self.device).eval()
 
             self._torch_model = model
-            self._meta = data["meta"]
+            self._meta = meta
             return
 
         raise ValueError(f"Unsupported dataset_key for loading: {self.dataset_key}")
 
     def _find_checkpoint(self, stem: str, suffix: str) -> Path:
-        if not config.CHECKPOINT_DIR.exists():
+        """체크포인트 경로 해결.
+
+        1) 로컬 `config.CHECKPOINT_DIR` 에 `{stem}*{suffix}` 가 있으면 최신 파일 사용 (개발 환경).
+        2) 없으면 HF Model Hub (`config.CHECKPOINT_REPO`) 에서 download 후 캐시 경로 반환.
+           동일 stem 의 `_meta.json` 도 함께 pull 해 `_load_checkpoint_meta()` 가 읽을 수 있게 한다.
+        """
+        if config.CHECKPOINT_DIR.exists():
+            local = sorted(config.CHECKPOINT_DIR.glob(f"{stem}*{suffix}"))
+            if local:
+                return local[-1]
+
+        from huggingface_hub import hf_hub_download, list_repo_files
+
+        all_files = list_repo_files(config.CHECKPOINT_REPO, repo_type="model")
+        matches = sorted(
+            f for f in all_files if f.startswith(f"{stem}_") and f.endswith(suffix)
+        )
+        if not matches:
             raise FileNotFoundError(
-                f"체크포인트 디렉토리가 존재하지 않습니다: {config.CHECKPOINT_DIR}. "
-                f"HF Spaces 배포 시 Git LFS 또는 HF Hub 다운로드 로직이 포함되어 있는지 확인하세요."
+                f"No checkpoint for {stem}{suffix} in {config.CHECKPOINT_REPO}"
             )
-        candidates = sorted(config.CHECKPOINT_DIR.glob(f"{stem}*{suffix}"))
-        if not candidates:
+
+        picked = matches[-1]
+        ckpt_local = hf_hub_download(
+            config.CHECKPOINT_REPO, picked, repo_type="model"
+        )
+
+        # sibling meta 도 동일 snapshot 에 내려 _load_checkpoint_meta 가 .with_name() 으로 찾을 수 있게.
+        picked_stem = picked[: -len(suffix)]
+        meta_filename = f"{picked_stem}_meta.json"
+        if meta_filename in all_files:
+            hf_hub_download(
+                config.CHECKPOINT_REPO, meta_filename, repo_type="model"
+            )
+
+        return Path(ckpt_local)
+
+    def _load_checkpoint_meta(self, ckpt_path: Path) -> Dict[str, Any]:
+        """체크포인트 옆 `<stem>_meta.json` 을 읽는다.
+
+        로컬/HF 캐시 둘 다에서 ckpt_path.with_name(...) 으로 접근 가능해야 한다.
+        (_find_checkpoint 이 HF download 시 sibling meta 도 내려받음)
+        """
+        meta_path = ckpt_path.with_name(f"{ckpt_path.stem}_meta.json")
+        if not meta_path.exists():
             raise FileNotFoundError(
-                f"Checkpoint not found for {stem} in {config.CHECKPOINT_DIR}"
+                f"Checkpoint meta not found: {meta_path}. "
+                f"업로드/로컬 모두에 {ckpt_path.stem}_meta.json 이 있는지 확인하세요."
             )
-        return candidates[-1]
+        with open(meta_path, "r", encoding="utf-8") as f:
+            return json.load(f)
 
     # ------------------------------------------------------------------
     # Lite mode
