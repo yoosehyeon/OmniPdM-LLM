@@ -30,6 +30,10 @@ REPORT_DIR = ARTIFACT_ROOT / "reports"
 for _d in (ARTIFACT_ROOT, CHECKPOINT_DIR, REPORT_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 
+# HF Model Hub repo 에서 체크포인트를 pull 한다. HF Space 에는 binary 를 포함할 수 없기 때문.
+# 로컬 CHECKPOINT_DIR 에 동일 stem 이 있으면 우선 사용 (개발 환경).
+CHECKPOINT_REPO = os.getenv("CHECKPOINT_REPO", "yusehyeon/hybridpdm-checkpoints")
+
 # 데이터셋별 경로. 키는 모델/스크립트 전반에서 사용되는 데이터셋 식별자.
 DATASET_PATHS = {
     "ai4i":      DATA_ROOT / "ai4i2020.csv",
