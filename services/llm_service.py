@@ -5,11 +5,14 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Dict, Generator
+from typing import TYPE_CHECKING, Dict, Generator, Optional
 
 from openai import OpenAI
 
 from services.schemas import ExplanationResult, LSTMExplainResult, LlmResult, PredictionResult, RiskResult
+
+if TYPE_CHECKING:
+    from services.llm_tools import ToolDispatcher
 
 
 _DEFAULT_SYSTEM_PROMPT = (
@@ -205,6 +208,7 @@ class LlmService:
         pred: PredictionResult,
         exp: "ExplanationResult | LSTMExplainResult",
         risk: RiskResult,
+        tool_dispatcher: "Optional[ToolDispatcher]" = None,
     ) -> LlmResult:
         prompt = self._build_prompt(payload, pred, exp, risk)
         prompt_hash = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
@@ -218,6 +222,19 @@ class LlmService:
             )
             self._log(prompt_hash, 0.0, "fallback_no_key")
             return result
+
+        enable_tools = (
+            os.getenv("ENABLE_LLM_TOOLS", "0") == "1" and tool_dispatcher is not None
+        )
+        if enable_tools:
+            return self._generate_with_tools(
+                prompt=prompt,
+                prompt_hash=prompt_hash,
+                pred=pred,
+                exp=exp,
+                risk=risk,
+                dispatcher=tool_dispatcher,
+            )
 
         started = time.perf_counter()
         try:
@@ -247,6 +264,118 @@ class LlmService:
         except Exception as e:
             latency_ms = (time.perf_counter() - started) * 1000.0
             self._log(prompt_hash, latency_ms, f"error:{type(e).__name__}")
+            return LlmResult(
+                text=self._generate_fallback(pred, exp, risk),
+                source="fallback",
+                used_fallback=True,
+                prompt_hash=prompt_hash,
+                latency_ms=round(latency_ms, 2),
+            )
+
+    def _generate_with_tools(
+        self,
+        prompt: str,
+        prompt_hash: str,
+        pred: PredictionResult,
+        exp: "ExplanationResult | LSTMExplainResult",
+        risk: RiskResult,
+        dispatcher: "ToolDispatcher",
+        max_iterations: int = 4,
+    ) -> LlmResult:
+        """
+        Groq (OpenAI-compatible) tool calling 루프.
+
+        - tools=TOOL_SCHEMAS, tool_choice="auto" 로 요청
+        - message.tool_calls 있으면 각 호출을 dispatcher.dispatch() 로 실행해 role=tool 메시지로 회신
+        - tool_calls 없으면 최종 텍스트로 간주
+        - max_iterations 초과 시 tools 없이 한 번 더 호출해 최종 답변 강제
+        - 실패/예외 시 fallback 텍스트로 LlmResult 반환 (파이프라인은 중단하지 않음)
+        """
+        from services.llm_tools import TOOL_SCHEMAS
+
+        started = time.perf_counter()
+        messages: list[dict] = [{"role": "system", "content": self.system_prompt}]
+        messages.extend(self.few_shot_messages)
+        messages.append({"role": "user", "content": prompt})
+
+        try:
+            for iteration in range(max_iterations):
+                completion = self.client.chat.completions.create(
+                    model=self.model_name,
+                    temperature=self._get_temperature_for_risk(risk.risk_level),
+                    max_tokens=self.max_tokens,
+                    messages=messages,
+                    tools=TOOL_SCHEMAS,
+                    tool_choice="auto",
+                )
+                message = completion.choices[0].message
+                tool_calls = getattr(message, "tool_calls", None) or []
+
+                if not tool_calls:
+                    latency_ms = (time.perf_counter() - started) * 1000.0
+                    text = (message.content or "").strip()
+                    self._log(prompt_hash, latency_ms, f"ok_tools_iter{iteration}")
+                    return LlmResult(
+                        text=text,
+                        source="groq+tools",
+                        used_fallback=False,
+                        prompt_hash=prompt_hash,
+                        latency_ms=round(latency_ms, 2),
+                    )
+
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": message.content or "",
+                        "tool_calls": [
+                            {
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.function.name,
+                                    "arguments": tc.function.arguments,
+                                },
+                            }
+                            for tc in tool_calls
+                        ],
+                    }
+                )
+
+                for tc in tool_calls:
+                    try:
+                        args = json.loads(tc.function.arguments or "{}")
+                    except json.JSONDecodeError:
+                        args = {}
+                    result = dispatcher.dispatch(tc.function.name, args)
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": json.dumps(result, ensure_ascii=False, default=str),
+                        }
+                    )
+
+            # max_iterations 초과: tools 없이 최종 답변 강제
+            final_completion = self.client.chat.completions.create(
+                model=self.model_name,
+                temperature=self._get_temperature_for_risk(risk.risk_level),
+                max_tokens=self.max_tokens,
+                messages=messages,
+            )
+            latency_ms = (time.perf_counter() - started) * 1000.0
+            text = (final_completion.choices[0].message.content or "").strip()
+            self._log(prompt_hash, latency_ms, "ok_tools_max_iter")
+            return LlmResult(
+                text=text,
+                source="groq+tools",
+                used_fallback=False,
+                prompt_hash=prompt_hash,
+                latency_ms=round(latency_ms, 2),
+            )
+
+        except Exception as e:
+            latency_ms = (time.perf_counter() - started) * 1000.0
+            self._log(prompt_hash, latency_ms, f"error_tools:{type(e).__name__}")
             return LlmResult(
                 text=self._generate_fallback(pred, exp, risk),
                 source="fallback",

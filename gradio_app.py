@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+from enum import Enum
 from typing import Any, Dict, Generator, List, Tuple
 
 import gradio as gr
@@ -653,9 +654,46 @@ def save_lstm_report(report_markdown: str, dataset_key: str, asset_id: str) -> T
 # ---------------------------------------------------------------------
 # Gradio UI 정의
 # ---------------------------------------------------------------------
+class ExecutionMode(str, Enum):
+    """
+    LLM 실행 경로 모드. 현재 2 값.
+    향후 mid-stream tool 호출 등 하이브리드가 필요하면 여기에 추가한다.
+    """
+    STREAM = "stream"
+    NON_STREAM = "non_stream"
+
+
+def resolve_execution_mode(
+    *, stream_env: bool, tools_env: bool
+) -> Tuple[ExecutionMode, str]:
+    """
+    Env 플래그 조합 → (mode, reason) 으로 결정.
+    이후 요청 단위 resolver 가 필요해지면 입력을 (request, config) 로 확장.
+    """
+    if tools_env:
+        # tool calling 은 여러 번의 round-trip 이 필요해 mid-stream 호출이 복잡함
+        return ExecutionMode.NON_STREAM, "tools_enabled_disables_stream"
+    if stream_env:
+        return ExecutionMode.STREAM, "stream_env_enabled"
+    return ExecutionMode.NON_STREAM, "default_non_stream"
+
+
 _ENABLE_LLM_STREAM = os.getenv("ENABLE_LLM_STREAM", "0") == "1"
-_analysis_handler = run_analysis_stream if _ENABLE_LLM_STREAM else run_analysis
-_lstm_analysis_handler = run_lstm_analysis_stream if _ENABLE_LLM_STREAM else run_lstm_analysis
+_ENABLE_LLM_TOOLS = os.getenv("ENABLE_LLM_TOOLS", "0") == "1"
+_execution_mode, _mode_reason = resolve_execution_mode(
+    stream_env=_ENABLE_LLM_STREAM,
+    tools_env=_ENABLE_LLM_TOOLS,
+)
+print(
+    f"[HybridPdM] execution mode resolved: "
+    f"mode={_execution_mode.value} "
+    f"stream_env={_ENABLE_LLM_STREAM} tools_env={_ENABLE_LLM_TOOLS} "
+    f"reason={_mode_reason}",
+    flush=True,
+)
+_use_stream = _execution_mode == ExecutionMode.STREAM
+_analysis_handler = run_analysis_stream if _use_stream else run_analysis
+_lstm_analysis_handler = run_lstm_analysis_stream if _use_stream else run_lstm_analysis
 
 with gr.Blocks(title="HybridPdM") as demo:
     gr.Markdown("# HybridPdM")

@@ -152,7 +152,8 @@ cp .env.example .env
 | `GROQ_BASE_URL` | OpenAI 호환 endpoint (커스텀 프록시용) | `https://api.groq.com/openai/v1` |
 | `PROMPT_DIR` | 시스템 프롬프트 디렉터리 | `prompts` |
 | `ENABLE_LLM_JUDGE` | `1` 설정 시 LLM-as-Judge 활성화 (추가 API 호출) | `0` |
-| `ENABLE_LLM_STREAM` | `1` 설정 시 UI 계층에서 `generate_stream()` 사용 (서비스 메서드는 값 무관하게 항상 제공) | `0` |
+| `ENABLE_LLM_STREAM` | `1` 설정 시 UI 계층에서 `generate_stream()` 사용 (서비스 메서드는 값 무관하게 항상 제공). `ENABLE_LLM_TOOLS=1` 과 동시 설정 시 tools 쪽이 우선하여 비-스트리밍 경로가 선택됨 — 결정 결과는 부팅 시 `[HybridPdM] execution mode resolved: ...` 로그로 확인 가능 | `0` |
+| `ENABLE_LLM_TOOLS` | `1` 설정 시 LLM Function Calling 활성화 (`services/llm_tools.py` 의 5 개 tool: `get_feature_schema` / `get_risk_threshold_info` / `get_recent_analysis_history` / `perturb_input_and_predict` / `compute_custom_risk_score`). 체크포인트를 실제로 다시 돌리므로 latency 가 늘 수 있음 | `0` |
 | `CHECKPOINT_REPO` | 런타임에 체크포인트를 pull 할 HF Model Hub repo. 로컬 `models_core/artifacts/checkpoints/` 에 동일 stem 이 있으면 우선 사용 | `yusehyeon/hybridpdm-checkpoints` |
 
 > LLM 프로바이더로 **Groq (Llama 3.3 70B Versatile)** 를 사용합니다. OpenAI 호환 endpoint 를 통해 `openai` SDK 그대로 호출하며, 무료 티어 한도(30 RPM / ~14.4K RPD) 는 본 프로젝트의 시연 수요를 충분히 감당합니다. API 키는 [Groq Cloud Console](https://console.groq.com/keys) 에서 발급.

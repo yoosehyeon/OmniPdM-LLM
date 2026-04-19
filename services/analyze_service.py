@@ -7,6 +7,7 @@ from services.explain_service import ExplainService
 from services.guardrail_service import GuardrailService
 from services.input_validation_service import InputValidationService
 from services.llm_service import LlmService
+from services.llm_tools import ToolDispatcher
 from services.pdm_service import PdmService
 from services.plot_service import PlotService
 from services.report_service import ReportService
@@ -87,11 +88,18 @@ class AnalyzeService:
 
         exp = self.explain_service.explain(normalized_payload, pred)
 
+        tool_dispatcher = ToolDispatcher(
+            dataset_key=self.dataset_key,
+            pdm_service=self.pdm_service,
+            risk_service=self.risk_service,
+            base_payload=normalized_payload,
+        )
         llm = self.llm_service.generate(
             payload=normalized_payload,
             pred=pred,
             exp=exp,
             risk=risk,
+            tool_dispatcher=tool_dispatcher,
         )
 
         llm = self.guardrail_service.validate(
@@ -349,11 +357,18 @@ class AnalyzeService:
             rul_norm=pred.rul_norm,
         )
 
+        tool_dispatcher = ToolDispatcher(
+            dataset_key=resolved_dataset_key,
+            pdm_service=self.pdm_service,
+            risk_service=self.risk_service,
+            base_payload=None,
+        )
         llm = self.llm_service.generate(
             payload=explain_payload,
             pred=pred,
             exp=exp,
             risk=risk,
+            tool_dispatcher=tool_dispatcher,
         )
 
         llm = self.guardrail_service.validate(
