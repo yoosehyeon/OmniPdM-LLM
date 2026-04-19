@@ -1,4 +1,20 @@
+---
+title: HybridPdM
+emoji: 🔧
+colorFrom: blue
+colorTo: green
+sdk: gradio
+sdk_version: 6.12.0
+app_file: app.py
+pinned: false
+python_version: "3.10"
+---
+
 # HybridPdM — Hybrid Predictive Maintenance with LLM Analysis
+
+> 본 저장소는 Hugging Face Spaces (Gradio SDK) 배포에 맞춰 구성되어 있습니다.
+> Space 진입 파일: [app.py](app.py) (내부적으로 `gradio_app.py` 의 `demo` 재노출).
+> 로컬 개발 시에는 `python gradio_app.py` 또는 `python app.py` 모두 사용 가능합니다.
 
 산업설비 예지보전(Predictive Maintenance)을 위한 하이브리드 파이프라인입니다.
 정형 센서 데이터(스칼라·시계열)를 입력받아 딥러닝 기반 고장 예측을 수행하고,
@@ -129,12 +145,16 @@ cp .env.example .env
 
 | 변수 | 설명 | 기본값 |
 |------|------|--------|
-| `OPENAI_API_KEY` | OpenAI API 키 (미설정 시 LLM 호출 없이 fallback 텍스트 사용) | - |
-| `OPENAI_MODEL` | 사용할 모델 | `gpt-4o-mini` |
-| `OPENAI_TEMPERATURE` | 기본 temperature (위험등급별로 동적 조정됨) | `0.2` |
-| `OPENAI_MAX_TOKENS` | 응답 최대 토큰 | `800` |
+| `GROQ_API_KEY` | Groq Cloud 에서 발급한 API 키 (미설정 시 LLM 호출 없이 fallback 텍스트 사용) | - |
+| `GROQ_MODEL` | 사용할 모델 | `llama-3.3-70b-versatile` |
+| `GROQ_TEMPERATURE` | 기본 temperature (위험등급별로 동적 조정됨) | `0.2` |
+| `GROQ_MAX_TOKENS` | 응답 최대 토큰 | `800` |
+| `GROQ_BASE_URL` | OpenAI 호환 endpoint (커스텀 프록시용) | `https://api.groq.com/openai/v1` |
 | `PROMPT_DIR` | 시스템 프롬프트 디렉터리 | `prompts` |
 | `ENABLE_LLM_JUDGE` | `1` 설정 시 LLM-as-Judge 활성화 (추가 API 호출) | `0` |
+| `ENABLE_LLM_STREAM` | `1` 설정 시 UI 계층에서 `generate_stream()` 사용 (서비스 메서드는 값 무관하게 항상 제공) | `0` |
+
+> LLM 프로바이더로 **Groq (Llama 3.3 70B Versatile)** 를 사용합니다. OpenAI 호환 endpoint 를 통해 `openai` SDK 그대로 호출하며, 무료 티어 한도(30 RPM / ~14.4K RPD) 는 본 프로젝트의 시연 수요를 충분히 감당합니다. API 키는 [Groq Cloud Console](https://console.groq.com/keys) 에서 발급.
 
 ---
 
@@ -153,6 +173,46 @@ python gradio_app.py
 ```bash
 python run_ngrok.py
 ```
+
+---
+
+## Hugging Face Spaces 배포
+
+본 프로젝트는 **Hugging Face Spaces (Gradio SDK, free CPU basic)** 를 1순위 시연 URL 로 사용합니다.
+
+### 1. Space 생성
+
+1. [huggingface.co/new-space](https://huggingface.co/new-space) 에서 새 Space 생성
+   - SDK: **Gradio**
+   - Hardware: **CPU basic (free)**
+2. 생성된 Space 저장소 clone 후 본 저장소 내용을 push (또는 기존 저장소를 Space remote 로 추가)
+
+### 2. Secrets 등록
+
+Space 의 `Settings → Variables and secrets → New secret` 메뉴에서 다음을 등록합니다.
+(값이 없으면 LLM 호출은 fallback 경로로 동작합니다.)
+
+| Key | 필수 | 설명 |
+|-----|------|------|
+| `GROQ_API_KEY` | 권장 | [Groq Cloud Console](https://console.groq.com/keys) 에서 발급 (무료). 미설정 시 LLM 코멘트는 규칙 기반 fallback 으로 대체됩니다 |
+| `GROQ_MODEL` | 선택 | 미설정 시 `llama-3.3-70b-versatile` |
+| `ENABLE_LLM_JUDGE` | 선택 | `1` 로 설정 시 Judge 파이프라인 활성화 (API 호출 증가) |
+| `ENABLE_LLM_STREAM` | 선택 | `1` 로 설정 시 UI 스트리밍 경로 사용 (P3-① Option B 적용 이후) |
+
+### 3. 체크포인트 전략
+
+- 본 Space 는 기본적으로 `Analysis` 탭의 `lite` 모드 (규칙 기반) 로 동작하며 체크포인트가 필요 없습니다.
+- `full` 모드 또는 `LSTM Analysis` 탭을 Space 상에서 실행하려면 체크포인트가 필요합니다. 저장소 크기 제약상 **HF Hub 모델 리포를 별도로 두고 `huggingface_hub.snapshot_download` 로 런타임 다운로드** 하는 전략을 권장합니다.
+- 현재 엔트리 구성에서는 체크포인트가 없어도 Space 가 정상 기동되며, `lite` 모드에서 LLM 파이프라인(P1/P2/P3-①) 전체를 시연할 수 있습니다.
+
+### 4. 진입 파일
+
+- HF Spaces 는 `app.py` 의 `demo` 객체를 자동으로 launch 합니다.
+- 본 저장소 `app.py` 는 `from gradio_app import demo` 로 재노출하는 얇은 래퍼이므로, 기존 `gradio_app.py` 엔트리 구조가 그대로 유지됩니다.
+
+### 5. 배포 백업
+
+Space 가 불안정하거나 빌드 오류가 장기화될 경우 백업으로 **ngrok paid (고정 도메인)** 을 사용할 수 있습니다. `run_ngrok.py` 참조.
 
 ---
 

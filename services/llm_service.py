@@ -5,7 +5,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Generator
 
 from openai import OpenAI
 
@@ -20,17 +20,21 @@ _DEFAULT_SYSTEM_PROMPT = (
 )
 
 
+_GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+
+
 class LlmService:
     """
-    OpenAI 실연동 + fallback.
+    Groq Llama 실연동 (OpenAI 호환 endpoint) + fallback.
     출력 계약은 반드시 3섹션 구조를 유지한다.
     """
 
     def __init__(self) -> None:
-        self.api_key = os.getenv("OPENAI_API_KEY")
-        self.model_name = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-        self.temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.2"))
-        self.max_tokens = int(os.getenv("OPENAI_MAX_TOKENS", "800"))
+        self.api_key = os.getenv("GROQ_API_KEY")
+        self.model_name = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+        self.temperature = float(os.getenv("GROQ_TEMPERATURE", "0.2"))
+        self.max_tokens = int(os.getenv("GROQ_MAX_TOKENS", "800"))
+        self.base_url = os.getenv("GROQ_BASE_URL", _GROQ_BASE_URL)
         self.prompt_dir = Path(os.getenv("PROMPT_DIR", "prompts"))
         self.logs_path = Path("logs")
         self.logs_path.mkdir(parents=True, exist_ok=True)
@@ -38,7 +42,11 @@ class LlmService:
         self.system_prompt = self._load_system_prompt()
         self.few_shot_messages = self._build_few_shot_messages()
 
-        self.client = OpenAI(api_key=self.api_key) if self.api_key else None
+        self.client = (
+            OpenAI(api_key=self.api_key, base_url=self.base_url)
+            if self.api_key
+            else None
+        )
 
     def _load_system_prompt(self) -> str:
         try:
@@ -228,7 +236,7 @@ class LlmService:
 
             result = LlmResult(
                 text=text,
-                source="openai",
+                source="groq",
                 used_fallback=False,
                 prompt_hash=prompt_hash,
                 latency_ms=round(latency_ms, 2),
@@ -241,6 +249,88 @@ class LlmService:
             self._log(prompt_hash, latency_ms, f"error:{type(e).__name__}")
             return LlmResult(
                 text=self._generate_fallback(pred, exp, risk),
+                source="fallback",
+                used_fallback=True,
+                prompt_hash=prompt_hash,
+                latency_ms=round(latency_ms, 2),
+            )
+
+    def generate_stream(
+        self,
+        payload: Dict[str, float],
+        pred: PredictionResult,
+        exp: "ExplanationResult | LSTMExplainResult",
+        risk: RiskResult,
+    ) -> Generator[str, None, LlmResult]:
+        """
+        토큰 단위 스트리밍 generator.
+
+        - yield: OpenAI delta content 조각 (fallback 경로는 단일 chunk)
+        - return (StopIteration.value): 누적 텍스트로 구성된 LlmResult
+
+        호출 예:
+            gen = svc.generate_stream(...)
+            try:
+                while True:
+                    chunk = next(gen)
+                    ...
+            except StopIteration as stop:
+                result: LlmResult = stop.value
+        """
+        prompt = self._build_prompt(payload, pred, exp, risk)
+        prompt_hash = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+
+        if not self.client:
+            fallback_text = self._generate_fallback(pred, exp, risk)
+            self._log(prompt_hash, 0.0, "fallback_no_key_stream")
+            yield fallback_text
+            return LlmResult(
+                text=fallback_text,
+                source="fallback",
+                used_fallback=True,
+                prompt_hash=prompt_hash,
+            )
+
+        started = time.perf_counter()
+        accumulated = ""
+        try:
+            messages = [{"role": "system", "content": self.system_prompt}]
+            messages.extend(self.few_shot_messages)
+            messages.append({"role": "user", "content": prompt})
+
+            stream = self.client.chat.completions.create(
+                model=self.model_name,
+                temperature=self._get_temperature_for_risk(risk.risk_level),
+                max_tokens=self.max_tokens,
+                messages=messages,
+                stream=True,
+            )
+            for chunk in stream:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta.content
+                if delta:
+                    accumulated += delta
+                    yield delta
+
+            latency_ms = (time.perf_counter() - started) * 1000.0
+            self._log(prompt_hash, latency_ms, "ok_stream")
+            return LlmResult(
+                text=accumulated.strip(),
+                source="groq",
+                used_fallback=False,
+                prompt_hash=prompt_hash,
+                latency_ms=round(latency_ms, 2),
+            )
+
+        except Exception as e:
+            latency_ms = (time.perf_counter() - started) * 1000.0
+            self._log(prompt_hash, latency_ms, f"error_stream:{type(e).__name__}")
+            # 이미 일부 chunk 가 소비됐을 수 있으므로 fallback 은 별도 전체 텍스트로 재시작
+            fallback_text = self._generate_fallback(pred, exp, risk)
+            yield fallback_text
+            return LlmResult(
+                text=fallback_text,
                 source="fallback",
                 used_fallback=True,
                 prompt_hash=prompt_hash,
