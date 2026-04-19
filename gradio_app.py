@@ -414,6 +414,12 @@ def parse_feature_names_text(feature_names_text: str) -> List[str] | None:
 # ---------------------------------------------------------------------
 # 기존 Analysis 실행 함수
 # ---------------------------------------------------------------------
+_LOADING_TUPLE: Tuple[str, str, Any, Any, str, str, str, str] = (
+    "모델 로딩 중... (첫 실행 시 체크포인트 다운로드로 최대 30초 소요 가능)",
+    "", None, None, "", "", "", "N/A",
+)
+
+
 def run_analysis(
     mode: str,
     dataset_key: str,
@@ -423,11 +429,8 @@ def run_analysis(
     rotational_speed_rpm: float,
     torque_nm: float,
     tool_wear_min: float,
-) -> Tuple[str, str, Any, Any, str, str, str, str]:
-    """
-    Analysis 탭의 핵심 실행 함수.
-    AnalyzeService.run() 반환 구조에 정확히 맞춰 출력값을 재조합한다.
-    """
+) -> Generator[Tuple[str, str, Any, Any, str, str, str, str], None, None]:
+    """Analysis 탭 실행 — 첫 yield 로 로딩 표시 후 결과 yield (generator)."""
     payload = {
         "air_temperature_k": air_temperature_k,
         "process_temperature_k": process_temperature_k,
@@ -436,17 +439,15 @@ def run_analysis(
         "tool_wear_min": tool_wear_min,
     }
 
+    yield _LOADING_TUPLE
+
     try:
         service = AnalyzeService(
-            mode=mode,
-            risk_method=risk_method,
-            dataset_key=dataset_key,
+            mode=mode, risk_method=risk_method, dataset_key=dataset_key,
         )
         result = service.run(payload)
-
         raw_json = _safe_json(result.get("raw_result", {}))
-
-        return (
+        yield (
             result.get("validation_text", ""),
             result.get("summary_text", ""),
             result.get("feature_plot", None),
@@ -456,43 +457,15 @@ def run_analysis(
             raw_json,
             result.get("alert_text", "N/A"),
         )
-
     except NotImplementedError as e:
         msg = f"현재 선택한 dataset_key는 이 입력 폼으로는 실행할 수 없습니다.\n\n{e}"
-        return (
-            msg,
-            "실행 불가",
-            None,
-            None,
-            "",
-            f"# Execution Error\n\n{msg}",
-            "{}",
-            "N/A",
-        )
+        yield (msg, "실행 불가", None, None, "", f"# Execution Error\n\n{msg}", "{}", "N/A")
     except FileNotFoundError as e:
         msg = f"체크포인트 또는 필수 파일이 없습니다.\n\n{e}"
-        return (
-            msg,
-            "실행 실패",
-            None,
-            None,
-            "",
-            f"# File Error\n\n{msg}",
-            "{}",
-            "N/A",
-        )
+        yield (msg, "실행 실패", None, None, "", f"# File Error\n\n{msg}", "{}", "N/A")
     except Exception as e:
         msg = f"분석 중 예외가 발생했습니다.\n\n{type(e).__name__}: {e}"
-        return (
-            msg,
-            "실행 실패",
-            None,
-            None,
-            "",
-            f"# Runtime Error\n\n{msg}",
-            "{}",
-            "N/A",
-        )
+        yield (msg, "실행 실패", None, None, "", f"# Runtime Error\n\n{msg}", "{}", "N/A")
 
 
 # ---------------------------------------------------------------------
@@ -544,6 +517,8 @@ def run_analysis_stream(
         "tool_wear_min": tool_wear_min,
     }
 
+    yield _LOADING_TUPLE
+
     try:
         service = AnalyzeService(
             mode=mode, risk_method=risk_method, dataset_key=dataset_key,
@@ -570,6 +545,7 @@ def run_lstm_analysis_stream(
     feature_names_text: str,
 ) -> Generator[Tuple[str, str, Any, Any, str, str, str, str], None, None]:
     """AnalyzeService.run_lstm_stream() 을 소비하여 Gradio 출력 tuple 을 점진 yield."""
+    yield _LOADING_TUPLE
     try:
         sequence = parse_sequence_text(sequence_text)
         feature_names = parse_feature_names_text(feature_names_text)
@@ -608,40 +584,24 @@ def run_lstm_analysis(
     asset_id: str,
     sequence_text: str,
     feature_names_text: str,
-) -> Tuple[str, str, Any, Any, str, str, str, str]:
-    """
-    LSTM Analysis 탭 실행 함수.
-
-    반환 순서:
-    1) validation_text
-    2) summary_text
-    3) feature_plot
-    4) sensor_plot
-    5) explanation_text
-    6) report_markdown
-    7) raw_json
-    8) alert_text
-    """
+) -> Generator[Tuple[str, str, Any, Any, str, str, str, str], None, None]:
+    """LSTM Analysis 탭 실행 — 첫 yield 로 로딩 표시 후 결과 yield (generator)."""
+    yield _LOADING_TUPLE
     try:
         sequence = parse_sequence_text(sequence_text)
         feature_names = parse_feature_names_text(feature_names_text)
 
         service = AnalyzeService(
-            mode=mode,
-            risk_method=risk_method,
-            dataset_key=dataset_key,
+            mode=mode, risk_method=risk_method, dataset_key=dataset_key,
         )
-
         result = service.run_lstm(
             sequence=sequence,
             feature_names=feature_names,
             asset_id=asset_id or "UNKNOWN",
             dataset_key=dataset_key,
         )
-
         raw_json = _safe_json(result.get("raw_result", {}))
-
-        return (
+        yield (
             result.get("validation_text", ""),
             result.get("summary_text", ""),
             result.get("feature_plot", None),
@@ -651,55 +611,18 @@ def run_lstm_analysis(
             raw_json,
             result.get("alert_text", "N/A"),
         )
-
     except ValueError as e:
         msg = f"LSTM 입력 파싱 오류입니다.\n\n{e}"
-        return (
-            msg,
-            "실행 실패",
-            None,
-            None,
-            "",
-            f"# Input Parse Error\n\n{msg}",
-            "{}",
-            "N/A",
-        )
+        yield (msg, "실행 실패", None, None, "", f"# Input Parse Error\n\n{msg}", "{}", "N/A")
     except NotImplementedError as e:
         msg = f"현재 LSTM 설정으로는 실행할 수 없습니다.\n\n{e}"
-        return (
-            msg,
-            "실행 불가",
-            None,
-            None,
-            "",
-            f"# Execution Error\n\n{msg}",
-            "{}",
-            "N/A",
-        )
+        yield (msg, "실행 불가", None, None, "", f"# Execution Error\n\n{msg}", "{}", "N/A")
     except FileNotFoundError as e:
         msg = f"LSTM 체크포인트 또는 필수 파일이 없습니다.\n\n{e}"
-        return (
-            msg,
-            "실행 실패",
-            None,
-            None,
-            "",
-            f"# File Error\n\n{msg}",
-            "{}",
-            "N/A",
-        )
+        yield (msg, "실행 실패", None, None, "", f"# File Error\n\n{msg}", "{}", "N/A")
     except Exception as e:
         msg = f"LSTM 분석 중 예외가 발생했습니다.\n\n{type(e).__name__}: {e}"
-        return (
-            msg,
-            "실행 실패",
-            None,
-            None,
-            "",
-            f"# Runtime Error\n\n{msg}",
-            "{}",
-            "N/A",
-        )
+        yield (msg, "실행 실패", None, None, "", f"# Runtime Error\n\n{msg}", "{}", "N/A")
 
 def save_lstm_report(report_markdown: str, dataset_key: str, asset_id: str) -> Tuple[str, str]:
     """
