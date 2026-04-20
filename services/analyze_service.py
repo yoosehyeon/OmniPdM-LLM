@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Dict, Generator, List, Optional
 
 from services.evaluation_service import EvaluationService
@@ -15,9 +16,11 @@ from services.risk_service import RiskService
 from services.schemas import (
     AnalysisResult,
     LSTMAnalysisResult,
-    LSTMExplainResult,
     LSTMSequenceInput,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class AnalyzeService:
@@ -201,19 +204,21 @@ class AnalyzeService:
             else "NO ALERT"
         )
 
-        # 첫 yield: LLM 생성 전까지 완성된 정보를 UI 에 즉시 표시
+        base_state = self._build_ui_base(
+            validation_text="정상",
+            summary_text=summary_text,
+            explanation_text=explanation_text,
+            feature_plot=feature_plot,
+            sensor_plot=sensor_plot,
+            alert_text=alert_text,
+        )
+
         yield {
-            "validation_text": "정상",
-            "summary_text": summary_text,
-            "explanation_text": explanation_text,
-            "feature_plot": feature_plot,
-            "sensor_plot": sensor_plot,
+            **base_state,
             "report_markdown": "## LLM 분석 코멘트 (생성 중...)\n\n",
             "raw_result": None,
-            "alert_text": alert_text,
         }
 
-        # 토큰 스트리밍
         gen = self.llm_service.generate_stream(normalized_payload, pred, exp, risk)
         accumulated = ""
         llm_result = None
@@ -222,16 +227,9 @@ class AnalyzeService:
                 chunk = next(gen)
                 accumulated += chunk
                 yield {
-                    "validation_text": "정상",
-                    "summary_text": summary_text,
-                    "explanation_text": explanation_text,
-                    "feature_plot": feature_plot,
-                    "sensor_plot": sensor_plot,
-                    "report_markdown": (
-                        "## LLM 분석 코멘트 (생성 중...)\n\n" + accumulated
-                    ),
+                    **base_state,
+                    "report_markdown": "## LLM 분석 코멘트 (생성 중...)\n\n" + accumulated,
                     "raw_result": None,
-                    "alert_text": alert_text,
                 }
         except StopIteration as stop:
             llm_result = stop.value
@@ -274,14 +272,10 @@ class AnalyzeService:
         )
 
         yield {
+            **base_state,
             "validation_text": self._compose_validation_text("정상", saved_md),
-            "summary_text": summary_text,
-            "explanation_text": explanation_text,
-            "feature_plot": feature_plot,
-            "sensor_plot": sensor_plot,
             "report_markdown": report_markdown,
             "raw_result": raw_result,
-            "alert_text": alert_text,
             "saved_report_path": saved_md,
         }
 
@@ -386,7 +380,7 @@ class AnalyzeService:
             feature_names=validation.feature_names,
         )
 
-        report_markdown = self._generate_lstm_report_markdown(
+        report_markdown = self.report_service.generate_lstm(
             asset_id=asset_id,
             validation=validation,
             pred=pred,
@@ -516,15 +510,19 @@ class AnalyzeService:
             else "NO ALERT"
         )
 
+        base_state = self._build_ui_base(
+            validation_text=validation_text,
+            summary_text=summary_text,
+            explanation_text=explanation_text,
+            feature_plot=feature_plot,
+            sensor_plot=sensor_plot,
+            alert_text=alert_text,
+        )
+
         yield {
-            "validation_text": validation_text,
-            "summary_text": summary_text,
-            "explanation_text": explanation_text,
-            "feature_plot": feature_plot,
-            "sensor_plot": sensor_plot,
+            **base_state,
             "report_markdown": "## LLM 분석 코멘트 (생성 중...)\n\n",
             "raw_result": None,
-            "alert_text": alert_text,
         }
 
         gen = self.llm_service.generate_stream(explain_payload, pred, exp, risk)
@@ -535,16 +533,9 @@ class AnalyzeService:
                 chunk = next(gen)
                 accumulated += chunk
                 yield {
-                    "validation_text": validation_text,
-                    "summary_text": summary_text,
-                    "explanation_text": explanation_text,
-                    "feature_plot": feature_plot,
-                    "sensor_plot": sensor_plot,
-                    "report_markdown": (
-                        "## LLM 분석 코멘트 (생성 중...)\n\n" + accumulated
-                    ),
+                    **base_state,
+                    "report_markdown": "## LLM 분석 코멘트 (생성 중...)\n\n" + accumulated,
                     "raw_result": None,
-                    "alert_text": alert_text,
                 }
         except StopIteration as stop:
             llm_result = stop.value
@@ -554,7 +545,7 @@ class AnalyzeService:
         )
         evaluation = self.evaluation_service.evaluate(llm_result, pred=pred, risk=risk)
 
-        report_markdown = self._generate_lstm_report_markdown(
+        report_markdown = self.report_service.generate_lstm(
             asset_id=asset_id,
             validation=validation,
             pred=pred,
@@ -586,14 +577,10 @@ class AnalyzeService:
         )
 
         yield {
+            **base_state,
             "validation_text": self._compose_validation_text(validation_text, saved_md),
-            "summary_text": summary_text,
-            "explanation_text": explanation_text,
-            "feature_plot": feature_plot,
-            "sensor_plot": sensor_plot,
             "report_markdown": report_markdown,
             "raw_result": raw_result,
-            "alert_text": alert_text,
             "saved_report_path": saved_md,
         }
 
@@ -616,8 +603,31 @@ class AnalyzeService:
                 asset_id=asset_id,
                 prefix=prefix,
             )
-        except Exception:
+        except Exception as e:
+            logger.warning(
+                "auto-save report failed (prefix=%s dataset=%s asset=%s): %s: %s",
+                prefix, dataset_key, asset_id, type(e).__name__, e,
+            )
             return None, None
+
+    @staticmethod
+    def _build_ui_base(
+        *,
+        validation_text: str,
+        summary_text: str,
+        explanation_text: str,
+        feature_plot,
+        sensor_plot,
+        alert_text: str,
+    ) -> Dict:
+        return {
+            "validation_text": validation_text,
+            "summary_text": summary_text,
+            "explanation_text": explanation_text,
+            "feature_plot": feature_plot,
+            "sensor_plot": sensor_plot,
+            "alert_text": alert_text,
+        }
 
     @staticmethod
     def _compose_validation_text(base: str, saved_md: Optional[str]) -> str:
@@ -689,80 +699,3 @@ class AnalyzeService:
 
         return {str(name): float(value) for name, value in zip(feature_names, latest)}
 
-    # ------------------------------------------------------------------
-    # Helper: LSTM report markdown
-    # ------------------------------------------------------------------
-    def _generate_lstm_report_markdown(
-        self,
-        asset_id: str,
-        validation,
-        pred,
-        exp,
-        risk,
-        llm,
-        evaluation,
-    ) -> str:
-        issue_lines = []
-        for issue in validation.issues:
-            issue_lines.append(f"- [{issue.level}] {issue.field}: {issue.message}")
-
-        top_features_md = "\n".join(
-            [
-                f"- {item['feature']}: importance={item['importance']}"
-                for item in exp.top_features
-            ]
-        ) if exp.top_features else "- 없음"
-
-        temporal_summary = exp.temporal_summary or {}
-
-        return f"""# HybridPdM LSTM Analysis Report
-
-## 1. Input Summary
-- asset_id: {asset_id}
-- dataset_key: {validation.dataset_key}
-- timesteps: {validation.timesteps}
-- feature_dim: {validation.feature_dim}
-- feature_names: {validation.feature_names}
-
-## 2. Validation
-{'정상' if validation.is_valid else '오류 있음'}
-
-{chr(10).join(issue_lines) if issue_lines else '- 없음'}
-
-## 3. Prediction
-- dataset_key: {pred.dataset_key}
-- task_type: {pred.task_type}
-- model_name: {pred.model_name}
-- model_mode: {pred.model_mode}
-- predicted_label: {pred.predicted_label}
-- failure_probability: {pred.failure_probability}
-- anomaly_score: {pred.anomaly_score}
-- rul_norm: {pred.rul_norm}
-
-## 4. Risk
-- risk_score: {risk.risk_score}
-- risk_level: {risk.risk_level}
-- method: {risk.method}
-- weights: {risk.weights}
-
-## 5. Explanation
-{exp.explanation_text}
-
-### Top Features
-{top_features_md}
-
-### Temporal Summary
-- most_recent_drivers: {temporal_summary.get("most_recent_drivers", [])}
-- largest_variation_features: {temporal_summary.get("largest_variation_features", [])}
-- timesteps: {temporal_summary.get("timesteps", "N/A")}
-- feature_dim: {temporal_summary.get("feature_dim", "N/A")}
-
-## 6. LLM Recommendation
-{llm.text}
-
-## 7. Evaluation
-- structure_ok: {evaluation.structure_ok}
-- factuality_ok: {evaluation.factuality_ok}
-- overall_score: {evaluation.overall_score}
-- notes: {evaluation.notes}
-"""

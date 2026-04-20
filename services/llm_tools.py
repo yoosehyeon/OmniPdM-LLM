@@ -14,14 +14,40 @@ Scope B:
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from models_core import config
+from models_core.data_pipeline import HYDRAULIC_SENSORS
 from services.input_validation_service import InputValidationService
 from services.pdm_service import PdmService
 from services.risk_service import RiskService
+
+
+_HYDRAULIC_SENSOR_META: Dict[str, Dict[str, Any]] = {
+    "PS1":  {"unit": "bar",   "min": 0.0,  "max": 200.0},
+    "PS2":  {"unit": "bar",   "min": 0.0,  "max": 200.0},
+    "PS3":  {"unit": "bar",   "min": 0.0,  "max": 10.0},
+    "PS4":  {"unit": "bar",   "min": 0.0,  "max": 10.0},
+    "PS5":  {"unit": "bar",   "min": 0.0,  "max": 10.0},
+    "PS6":  {"unit": "bar",   "min": 0.0,  "max": 10.0},
+    "EPS1": {"unit": "W",     "min": 0.0,  "max": 3000.0},
+    "FS1":  {"unit": "l/min", "min": 0.0,  "max": 15.0},
+    "FS2":  {"unit": "l/min", "min": 0.0,  "max": 15.0},
+    "TS1":  {"unit": "°C",    "min": 30.0, "max": 70.0},
+    "TS2":  {"unit": "°C",    "min": 30.0, "max": 70.0},
+    "TS3":  {"unit": "°C",    "min": 30.0, "max": 70.0},
+    "TS4":  {"unit": "°C",    "min": 30.0, "max": 70.0},
+    "VS1":  {"unit": "mm/s",  "min": 0.0,  "max": 2.0},
+    "CE":   {"unit": "%",     "min": 0.0,  "max": 100.0},
+    "CP":   {"unit": "kW",    "min": 0.0,  "max": 3.0},
+    "SE":   {"unit": "%",     "min": 0.0,  "max": 100.0},
+}
+
+
+logger = logging.getLogger(__name__)
 
 
 TOOL_SCHEMAS: List[Dict[str, Any]] = [
@@ -193,7 +219,16 @@ class ToolDispatcher:
             return {
                 "dataset_key": dataset_key,
                 "input_mode": "scalar",
-                "note": "hydraulic_ae 는 전용 센서 스키마를 사용합니다.",
+                "note": (
+                    "Cycle-averaged 17-dim sensor vector "
+                    "(data_pipeline.load_hydraulic_ae 참조). "
+                    "min/max 는 UCI Hydraulic 데이터셋 기반 approximate reference 이며, "
+                    "실제 검증은 InputValidationService 가 담당합니다."
+                ),
+                "fields": [
+                    {"name": name, **_HYDRAULIC_SENSOR_META[name]}
+                    for name in HYDRAULIC_SENSORS
+                ],
             }
         return {
             "dataset_key": dataset_key,
@@ -244,8 +279,11 @@ class ToolDispatcher:
                             "risk_score": risk.get("risk_score"),
                         }
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(
+                        "recent history JSON parse failed (%s): %s: %s",
+                        json_path.name, type(e).__name__, e,
+                    )
             items.append(entry)
 
         return {"items": items, "count": len(items)}

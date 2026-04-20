@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import time
 from pathlib import Path
@@ -10,6 +11,9 @@ from typing import TYPE_CHECKING, Dict, Generator, Optional
 from openai import OpenAI
 
 from services.schemas import ExplanationResult, LSTMExplainResult, LlmResult, PredictionResult, RiskResult
+
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from services.llm_tools import ToolDispatcher
@@ -578,6 +582,8 @@ class LlmService:
             }
             with open(self.logs_path / "llm_calls.jsonl", "a", encoding="utf-8") as f:
                 f.write(json.dumps(line, ensure_ascii=False) + "\n")
-        except Exception:
-            # 로깅 실패가 전체 파이프라인을 멈춰서는 안 된다
-            pass
+        except Exception as e:
+            # 로깅 실패가 전체 파이프라인을 멈춰서는 안 되지만, 흔적은 남긴다.
+            logger.warning(
+                "llm_calls.jsonl append failed: %s: %s", type(e).__name__, e,
+            )

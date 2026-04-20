@@ -421,6 +421,11 @@ _LOADING_TUPLE: Tuple[str, str, Any, Any, str, str, str, str] = (
 )
 
 
+def _error_tuple(msg: str, status: str, title: str) -> Tuple[str, str, Any, Any, str, str, str, str]:
+    """분석 실행 중 오류를 8-tuple UI 응답으로 변환한다."""
+    return (msg, status, None, None, "", f"# {title}\n\n{msg}", "{}", "N/A")
+
+
 def run_analysis(
     mode: str,
     dataset_key: str,
@@ -459,14 +464,20 @@ def run_analysis(
             result.get("alert_text", "N/A"),
         )
     except NotImplementedError as e:
-        msg = f"현재 선택한 dataset_key는 이 입력 폼으로는 실행할 수 없습니다.\n\n{e}"
-        yield (msg, "실행 불가", None, None, "", f"# Execution Error\n\n{msg}", "{}", "N/A")
+        yield _error_tuple(
+            f"현재 선택한 dataset_key는 이 입력 폼으로는 실행할 수 없습니다.\n\n{e}",
+            "실행 불가", "Execution Error",
+        )
     except FileNotFoundError as e:
-        msg = f"체크포인트 또는 필수 파일이 없습니다.\n\n{e}"
-        yield (msg, "실행 실패", None, None, "", f"# File Error\n\n{msg}", "{}", "N/A")
+        yield _error_tuple(
+            f"체크포인트 또는 필수 파일이 없습니다.\n\n{e}",
+            "실행 실패", "File Error",
+        )
     except Exception as e:
-        msg = f"분석 중 예외가 발생했습니다.\n\n{type(e).__name__}: {e}"
-        yield (msg, "실행 실패", None, None, "", f"# Runtime Error\n\n{msg}", "{}", "N/A")
+        yield _error_tuple(
+            f"분석 중 예외가 발생했습니다.\n\n{type(e).__name__}: {e}",
+            "실행 실패", "Runtime Error",
+        )
 
 
 # ---------------------------------------------------------------------
@@ -527,14 +538,20 @@ def run_analysis_stream(
         for partial in service.run_stream(payload):
             yield _partial_to_tuple(partial)
     except NotImplementedError as e:
-        msg = f"현재 선택한 dataset_key는 이 입력 폼으로는 실행할 수 없습니다.\n\n{e}"
-        yield (msg, "실행 불가", None, None, "", f"# Execution Error\n\n{msg}", "{}", "N/A")
+        yield _error_tuple(
+            f"현재 선택한 dataset_key는 이 입력 폼으로는 실행할 수 없습니다.\n\n{e}",
+            "실행 불가", "Execution Error",
+        )
     except FileNotFoundError as e:
-        msg = f"체크포인트 또는 필수 파일이 없습니다.\n\n{e}"
-        yield (msg, "실행 실패", None, None, "", f"# File Error\n\n{msg}", "{}", "N/A")
+        yield _error_tuple(
+            f"체크포인트 또는 필수 파일이 없습니다.\n\n{e}",
+            "실행 실패", "File Error",
+        )
     except Exception as e:
-        msg = f"분석 중 예외가 발생했습니다.\n\n{type(e).__name__}: {e}"
-        yield (msg, "실행 실패", None, None, "", f"# Runtime Error\n\n{msg}", "{}", "N/A")
+        yield _error_tuple(
+            f"분석 중 예외가 발생했습니다.\n\n{type(e).__name__}: {e}",
+            "실행 실패", "Runtime Error",
+        )
 
 
 def run_lstm_analysis_stream(
@@ -562,17 +579,25 @@ def run_lstm_analysis_stream(
         ):
             yield _partial_to_tuple(partial)
     except ValueError as e:
-        msg = f"LSTM 입력 파싱 오류입니다.\n\n{e}"
-        yield (msg, "실행 실패", None, None, "", f"# Input Parse Error\n\n{msg}", "{}", "N/A")
+        yield _error_tuple(
+            f"LSTM 입력 파싱 오류입니다.\n\n{e}",
+            "실행 실패", "Input Parse Error",
+        )
     except NotImplementedError as e:
-        msg = f"현재 LSTM 설정으로는 실행할 수 없습니다.\n\n{e}"
-        yield (msg, "실행 불가", None, None, "", f"# Execution Error\n\n{msg}", "{}", "N/A")
+        yield _error_tuple(
+            f"현재 LSTM 설정으로는 실행할 수 없습니다.\n\n{e}",
+            "실행 불가", "Execution Error",
+        )
     except FileNotFoundError as e:
-        msg = f"LSTM 체크포인트 또는 필수 파일이 없습니다.\n\n{e}"
-        yield (msg, "실행 실패", None, None, "", f"# File Error\n\n{msg}", "{}", "N/A")
+        yield _error_tuple(
+            f"LSTM 체크포인트 또는 필수 파일이 없습니다.\n\n{e}",
+            "실행 실패", "File Error",
+        )
     except Exception as e:
-        msg = f"LSTM 분석 중 예외가 발생했습니다.\n\n{type(e).__name__}: {e}"
-        yield (msg, "실행 실패", None, None, "", f"# Runtime Error\n\n{msg}", "{}", "N/A")
+        yield _error_tuple(
+            f"LSTM 분석 중 예외가 발생했습니다.\n\n{type(e).__name__}: {e}",
+            "실행 실패", "Runtime Error",
+        )
 
 
 # ---------------------------------------------------------------------
@@ -613,17 +638,25 @@ def run_lstm_analysis(
             result.get("alert_text", "N/A"),
         )
     except ValueError as e:
-        msg = f"LSTM 입력 파싱 오류입니다.\n\n{e}"
-        yield (msg, "실행 실패", None, None, "", f"# Input Parse Error\n\n{msg}", "{}", "N/A")
+        yield _error_tuple(
+            f"LSTM 입력 파싱 오류입니다.\n\n{e}",
+            "실행 실패", "Input Parse Error",
+        )
     except NotImplementedError as e:
-        msg = f"현재 LSTM 설정으로는 실행할 수 없습니다.\n\n{e}"
-        yield (msg, "실행 불가", None, None, "", f"# Execution Error\n\n{msg}", "{}", "N/A")
+        yield _error_tuple(
+            f"현재 LSTM 설정으로는 실행할 수 없습니다.\n\n{e}",
+            "실행 불가", "Execution Error",
+        )
     except FileNotFoundError as e:
-        msg = f"LSTM 체크포인트 또는 필수 파일이 없습니다.\n\n{e}"
-        yield (msg, "실행 실패", None, None, "", f"# File Error\n\n{msg}", "{}", "N/A")
+        yield _error_tuple(
+            f"LSTM 체크포인트 또는 필수 파일이 없습니다.\n\n{e}",
+            "실행 실패", "File Error",
+        )
     except Exception as e:
-        msg = f"LSTM 분석 중 예외가 발생했습니다.\n\n{type(e).__name__}: {e}"
-        yield (msg, "실행 실패", None, None, "", f"# Runtime Error\n\n{msg}", "{}", "N/A")
+        yield _error_tuple(
+            f"LSTM 분석 중 예외가 발생했습니다.\n\n{type(e).__name__}: {e}",
+            "실행 실패", "Runtime Error",
+        )
 
 def save_lstm_report(report_markdown: str, dataset_key: str, asset_id: str) -> Tuple[str, str]:
     """
@@ -717,11 +750,10 @@ with gr.Blocks(title="HybridPdM") as demo:
                     choices=[
                         "ai4i_cnn",
                         "ai4i_gbdt",
-                        "hydraulic_ae",
                     ],
                     value="ai4i_cnn",
                     label="Dataset Key",
-                    info="이 탭은 scalar 입력 전용입니다. LSTM 계열은 'LSTM Analysis' 탭에서 실행합니다.",
+                    info="이 탭은 AI4I 5-sensor scalar 입력 전용입니다. LSTM 계열은 'LSTM Analysis' 탭, Hydraulic 17-센서는 별도 입력 계약이 필요합니다.",
                 )
                 risk_method_dd = gr.Dropdown(
                     choices=["weighted", "noisy_or", "max"],

@@ -1,0 +1,35 @@
+name: Smoke Tests
+
+on:
+  push:
+    branches: [main, update]
+  pull_request:
+    branches: [main]
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install --extra-index-url https://download.pytorch.org/whl/cpu \
+            -r requirements.txt \
+            pytest
+
+      - name: Run smoke tests
+        env:
+          # API 키 없이 fallback 경로만 검증
+          ENABLE_LLM_TOOLS: "0"
+          ENABLE_LLM_STREAM: "0"
+          # matplotlib headless backend (Tk 미설치 환경 대응)
+          MPLBACKEND: "Agg"
+        run: pytest tests/test_smoke.py -v --tb=short
