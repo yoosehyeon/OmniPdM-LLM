@@ -22,7 +22,8 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, List, Tuple
+from enum import Enum
+from typing import Any, Dict, Generator, List, Tuple
 
 import gradio as gr
 
@@ -96,6 +97,55 @@ def _extract_report_text(report_markdown: str) -> str:
     현재는 Markdown만 사용하므로 보조 함수로만 둔다.
     """
     return report_markdown if isinstance(report_markdown, str) else ""
+
+
+def list_saved_reports(limit: int = 50) -> List[List[str]]:
+    """config.REPORT_DIR 의 `*_report_*.md` 목록 (최신순)."""
+    report_dir = config.REPORT_DIR
+    report_dir.mkdir(parents=True, exist_ok=True)
+
+    md_files = sorted(
+        report_dir.glob("*_report_*.md"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )[:limit]
+
+    from datetime import datetime as _dt
+    rows: List[List[str]] = []
+    for path in md_files:
+        stat = path.stat()
+        mtime_str = _dt.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+        rows.append([path.name, mtime_str, f"{stat.st_size:,}"])
+    return rows
+
+
+def load_report_preview(evt: gr.SelectData) -> Tuple[str, str, Any]:
+    """
+    Report tab Dataframe 행 클릭 시: markdown + raw json + 다운로드 파일 반환.
+    """
+    try:
+        row_idx = evt.index[0] if isinstance(evt.index, (list, tuple)) else evt.index
+        rows = list_saved_reports()
+        if not rows or row_idx is None or row_idx >= len(rows):
+            return "선택된 파일이 없습니다.", "{}", None
+
+        filename = rows[row_idx][0]
+        md_path = config.REPORT_DIR / filename
+
+        if not md_path.exists():
+            return f"파일을 찾을 수 없습니다: {filename}", "{}", None
+
+        markdown_text = md_path.read_text(encoding="utf-8")
+
+        json_path = md_path.with_suffix(".json")
+        if json_path.exists():
+            raw_json = json_path.read_text(encoding="utf-8")
+        else:
+            raw_json = "(해당 리포트의 raw JSON 이 없습니다. 구버전 저장본일 수 있습니다.)"
+
+        return markdown_text, raw_json, str(md_path)
+    except Exception as e:
+        return f"리포트 로드 실패: {type(e).__name__}: {e}", "{}", None
 
 
 def _latest_pipeline_reports(limit: int = 5) -> List[List[str]]:
@@ -365,6 +415,17 @@ def parse_feature_names_text(feature_names_text: str) -> List[str] | None:
 # ---------------------------------------------------------------------
 # 기존 Analysis 실행 함수
 # ---------------------------------------------------------------------
+_LOADING_TUPLE: Tuple[str, str, Any, Any, str, str, str, str] = (
+    "모델 로딩 중... (첫 실행 시 체크포인트 다운로드로 최대 30초 소요 가능)",
+    "", None, None, "", "", "", "N/A",
+)
+
+
+def _error_tuple(msg: str, status: str, title: str) -> Tuple[str, str, Any, Any, str, str, str, str]:
+    """분석 실행 중 오류를 8-tuple UI 응답으로 변환한다."""
+    return (msg, status, None, None, "", f"# {title}\n\n{msg}", "{}", "N/A")
+
+
 def run_analysis(
     mode: str,
     dataset_key: str,
@@ -374,11 +435,8 @@ def run_analysis(
     rotational_speed_rpm: float,
     torque_nm: float,
     tool_wear_min: float,
-) -> Tuple[str, str, Any, Any, str, str, str, str]:
-    """
-    Analysis 탭의 핵심 실행 함수.
-    AnalyzeService.run() 반환 구조에 정확히 맞춰 출력값을 재조합한다.
-    """
+) -> Generator[Tuple[str, str, Any, Any, str, str, str, str], None, None]:
+    """Analysis 탭 실행 — 첫 yield 로 로딩 표시 후 결과 yield (generator)."""
     payload = {
         "air_temperature_k": air_temperature_k,
         "process_temperature_k": process_temperature_k,
@@ -387,17 +445,15 @@ def run_analysis(
         "tool_wear_min": tool_wear_min,
     }
 
+    yield _LOADING_TUPLE
+
     try:
         service = AnalyzeService(
-            mode=mode,
-            risk_method=risk_method,
-            dataset_key=dataset_key,
+            mode=mode, risk_method=risk_method, dataset_key=dataset_key,
         )
         result = service.run(payload)
-
         raw_json = _safe_json(result.get("raw_result", {}))
-
-        return (
+        yield (
             result.get("validation_text", ""),
             result.get("summary_text", ""),
             result.get("feature_plot", None),
@@ -407,42 +463,140 @@ def run_analysis(
             raw_json,
             result.get("alert_text", "N/A"),
         )
-
     except NotImplementedError as e:
-        msg = f"현재 선택한 dataset_key는 이 입력 폼으로는 실행할 수 없습니다.\n\n{e}"
-        return (
-            msg,
-            "실행 불가",
-            None,
-            None,
-            "",
-            f"# Execution Error\n\n{msg}",
-            "{}",
-            "N/A",
+        yield _error_tuple(
+            f"현재 선택한 dataset_key는 이 입력 폼으로는 실행할 수 없습니다.\n\n{e}",
+            "실행 불가", "Execution Error",
         )
     except FileNotFoundError as e:
-        msg = f"체크포인트 또는 필수 파일이 없습니다.\n\n{e}"
-        return (
-            msg,
-            "실행 실패",
-            None,
-            None,
-            "",
-            f"# File Error\n\n{msg}",
-            "{}",
-            "N/A",
+        yield _error_tuple(
+            f"체크포인트 또는 필수 파일이 없습니다.\n\n{e}",
+            "실행 실패", "File Error",
         )
     except Exception as e:
-        msg = f"분석 중 예외가 발생했습니다.\n\n{type(e).__name__}: {e}"
-        return (
-            msg,
-            "실행 실패",
-            None,
-            None,
-            "",
-            f"# Runtime Error\n\n{msg}",
-            "{}",
-            "N/A",
+        yield _error_tuple(
+            f"분석 중 예외가 발생했습니다.\n\n{type(e).__name__}: {e}",
+            "실행 실패", "Runtime Error",
+        )
+
+
+# ---------------------------------------------------------------------
+# Streaming 실행 함수 (ENABLE_LLM_STREAM=1 시 사용)
+# ---------------------------------------------------------------------
+_STREAM_OUTPUT_KEYS = (
+    "validation_text",
+    "summary_text",
+    "feature_plot",
+    "sensor_plot",
+    "explanation_text",
+    "report_markdown",
+    "raw_result",
+    "alert_text",
+)
+
+
+def _partial_to_tuple(partial: Dict[str, Any]) -> Tuple[str, str, Any, Any, str, str, str, str]:
+    raw = partial.get("raw_result")
+    raw_json = _safe_json(raw) if raw is not None else ""
+    return (
+        partial.get("validation_text", ""),
+        partial.get("summary_text", ""),
+        partial.get("feature_plot", None),
+        partial.get("sensor_plot", None),
+        partial.get("explanation_text", ""),
+        partial.get("report_markdown", ""),
+        raw_json,
+        partial.get("alert_text", "N/A"),
+    )
+
+
+def run_analysis_stream(
+    mode: str,
+    dataset_key: str,
+    risk_method: str,
+    air_temperature_k: float,
+    process_temperature_k: float,
+    rotational_speed_rpm: float,
+    torque_nm: float,
+    tool_wear_min: float,
+) -> Generator[Tuple[str, str, Any, Any, str, str, str, str], None, None]:
+    """AnalyzeService.run_stream() 를 소비하여 Gradio 출력 tuple 을 점진 yield."""
+    payload = {
+        "air_temperature_k": air_temperature_k,
+        "process_temperature_k": process_temperature_k,
+        "rotational_speed_rpm": rotational_speed_rpm,
+        "torque_nm": torque_nm,
+        "tool_wear_min": tool_wear_min,
+    }
+
+    yield _LOADING_TUPLE
+
+    try:
+        service = AnalyzeService(
+            mode=mode, risk_method=risk_method, dataset_key=dataset_key,
+        )
+        for partial in service.run_stream(payload):
+            yield _partial_to_tuple(partial)
+    except NotImplementedError as e:
+        yield _error_tuple(
+            f"현재 선택한 dataset_key는 이 입력 폼으로는 실행할 수 없습니다.\n\n{e}",
+            "실행 불가", "Execution Error",
+        )
+    except FileNotFoundError as e:
+        yield _error_tuple(
+            f"체크포인트 또는 필수 파일이 없습니다.\n\n{e}",
+            "실행 실패", "File Error",
+        )
+    except Exception as e:
+        yield _error_tuple(
+            f"분석 중 예외가 발생했습니다.\n\n{type(e).__name__}: {e}",
+            "실행 실패", "Runtime Error",
+        )
+
+
+def run_lstm_analysis_stream(
+    mode: str,
+    dataset_key: str,
+    risk_method: str,
+    asset_id: str,
+    sequence_text: str,
+    feature_names_text: str,
+) -> Generator[Tuple[str, str, Any, Any, str, str, str, str], None, None]:
+    """AnalyzeService.run_lstm_stream() 을 소비하여 Gradio 출력 tuple 을 점진 yield."""
+    yield _LOADING_TUPLE
+    try:
+        sequence = parse_sequence_text(sequence_text)
+        feature_names = parse_feature_names_text(feature_names_text)
+
+        service = AnalyzeService(
+            mode=mode, risk_method=risk_method, dataset_key=dataset_key,
+        )
+        for partial in service.run_lstm_stream(
+            sequence=sequence,
+            feature_names=feature_names,
+            asset_id=asset_id or "UNKNOWN",
+            dataset_key=dataset_key,
+        ):
+            yield _partial_to_tuple(partial)
+    except ValueError as e:
+        yield _error_tuple(
+            f"LSTM 입력 파싱 오류입니다.\n\n{e}",
+            "실행 실패", "Input Parse Error",
+        )
+    except NotImplementedError as e:
+        yield _error_tuple(
+            f"현재 LSTM 설정으로는 실행할 수 없습니다.\n\n{e}",
+            "실행 불가", "Execution Error",
+        )
+    except FileNotFoundError as e:
+        yield _error_tuple(
+            f"LSTM 체크포인트 또는 필수 파일이 없습니다.\n\n{e}",
+            "실행 실패", "File Error",
+        )
+    except Exception as e:
+        yield _error_tuple(
+            f"LSTM 분석 중 예외가 발생했습니다.\n\n{type(e).__name__}: {e}",
+            "실행 실패", "Runtime Error",
         )
 
 
@@ -456,40 +610,24 @@ def run_lstm_analysis(
     asset_id: str,
     sequence_text: str,
     feature_names_text: str,
-) -> Tuple[str, str, Any, Any, str, str, str, str]:
-    """
-    LSTM Analysis 탭 실행 함수.
-
-    반환 순서:
-    1) validation_text
-    2) summary_text
-    3) feature_plot
-    4) sensor_plot
-    5) explanation_text
-    6) report_markdown
-    7) raw_json
-    8) alert_text
-    """
+) -> Generator[Tuple[str, str, Any, Any, str, str, str, str], None, None]:
+    """LSTM Analysis 탭 실행 — 첫 yield 로 로딩 표시 후 결과 yield (generator)."""
+    yield _LOADING_TUPLE
     try:
         sequence = parse_sequence_text(sequence_text)
         feature_names = parse_feature_names_text(feature_names_text)
 
         service = AnalyzeService(
-            mode=mode,
-            risk_method=risk_method,
-            dataset_key=dataset_key,
+            mode=mode, risk_method=risk_method, dataset_key=dataset_key,
         )
-
         result = service.run_lstm(
             sequence=sequence,
             feature_names=feature_names,
             asset_id=asset_id or "UNKNOWN",
             dataset_key=dataset_key,
         )
-
         raw_json = _safe_json(result.get("raw_result", {}))
-
-        return (
+        yield (
             result.get("validation_text", ""),
             result.get("summary_text", ""),
             result.get("feature_plot", None),
@@ -499,54 +637,25 @@ def run_lstm_analysis(
             raw_json,
             result.get("alert_text", "N/A"),
         )
-
     except ValueError as e:
-        msg = f"LSTM 입력 파싱 오류입니다.\n\n{e}"
-        return (
-            msg,
-            "실행 실패",
-            None,
-            None,
-            "",
-            f"# Input Parse Error\n\n{msg}",
-            "{}",
-            "N/A",
+        yield _error_tuple(
+            f"LSTM 입력 파싱 오류입니다.\n\n{e}",
+            "실행 실패", "Input Parse Error",
         )
     except NotImplementedError as e:
-        msg = f"현재 LSTM 설정으로는 실행할 수 없습니다.\n\n{e}"
-        return (
-            msg,
-            "실행 불가",
-            None,
-            None,
-            "",
-            f"# Execution Error\n\n{msg}",
-            "{}",
-            "N/A",
+        yield _error_tuple(
+            f"현재 LSTM 설정으로는 실행할 수 없습니다.\n\n{e}",
+            "실행 불가", "Execution Error",
         )
     except FileNotFoundError as e:
-        msg = f"LSTM 체크포인트 또는 필수 파일이 없습니다.\n\n{e}"
-        return (
-            msg,
-            "실행 실패",
-            None,
-            None,
-            "",
-            f"# File Error\n\n{msg}",
-            "{}",
-            "N/A",
+        yield _error_tuple(
+            f"LSTM 체크포인트 또는 필수 파일이 없습니다.\n\n{e}",
+            "실행 실패", "File Error",
         )
     except Exception as e:
-        msg = f"LSTM 분석 중 예외가 발생했습니다.\n\n{type(e).__name__}: {e}"
-        return (
-            msg,
-            "실행 실패",
-            None,
-            None,
-            "",
-            f"# Runtime Error\n\n{msg}",
-            "{}",
-            "N/A",
+        yield _error_tuple(
+            f"LSTM 분석 중 예외가 발생했습니다.\n\n{type(e).__name__}: {e}",
+            "실행 실패", "Runtime Error",
         )
 
 def save_lstm_report(report_markdown: str, dataset_key: str, asset_id: str) -> Tuple[str, str]:
@@ -578,6 +687,47 @@ def save_lstm_report(report_markdown: str, dataset_key: str, asset_id: str) -> T
 # ---------------------------------------------------------------------
 # Gradio UI 정의
 # ---------------------------------------------------------------------
+class ExecutionMode(str, Enum):
+    """
+    LLM 실행 경로 모드. 현재 2 값.
+    향후 mid-stream tool 호출 등 하이브리드가 필요하면 여기에 추가한다.
+    """
+    STREAM = "stream"
+    NON_STREAM = "non_stream"
+
+
+def resolve_execution_mode(
+    *, stream_env: bool, tools_env: bool
+) -> Tuple[ExecutionMode, str]:
+    """
+    Env 플래그 조합 → (mode, reason) 으로 결정.
+    이후 요청 단위 resolver 가 필요해지면 입력을 (request, config) 로 확장.
+    """
+    if tools_env:
+        # tool calling 은 여러 번의 round-trip 이 필요해 mid-stream 호출이 복잡함
+        return ExecutionMode.NON_STREAM, "tools_enabled_disables_stream"
+    if stream_env:
+        return ExecutionMode.STREAM, "stream_env_enabled"
+    return ExecutionMode.NON_STREAM, "default_non_stream"
+
+
+_ENABLE_LLM_STREAM = os.getenv("ENABLE_LLM_STREAM", "0") == "1"
+_ENABLE_LLM_TOOLS = os.getenv("ENABLE_LLM_TOOLS", "0") == "1"
+_execution_mode, _mode_reason = resolve_execution_mode(
+    stream_env=_ENABLE_LLM_STREAM,
+    tools_env=_ENABLE_LLM_TOOLS,
+)
+print(
+    f"[HybridPdM] execution mode resolved: "
+    f"mode={_execution_mode.value} "
+    f"stream_env={_ENABLE_LLM_STREAM} tools_env={_ENABLE_LLM_TOOLS} "
+    f"reason={_mode_reason}",
+    flush=True,
+)
+_use_stream = _execution_mode == ExecutionMode.STREAM
+_analysis_handler = run_analysis_stream if _use_stream else run_analysis
+_lstm_analysis_handler = run_lstm_analysis_stream if _use_stream else run_lstm_analysis
+
 with gr.Blocks(title="HybridPdM") as demo:
     gr.Markdown("# HybridPdM")
     gr.Markdown(
@@ -600,11 +750,10 @@ with gr.Blocks(title="HybridPdM") as demo:
                     choices=[
                         "ai4i_cnn",
                         "ai4i_gbdt",
-                        "hydraulic_ae",
                     ],
                     value="ai4i_cnn",
                     label="Dataset Key",
-                    info="이 탭은 scalar 입력 전용입니다. LSTM 계열은 'LSTM Analysis' 탭에서 실행합니다.",
+                    info="이 탭은 AI4I 5-sensor scalar 입력 전용입니다. LSTM 계열은 'LSTM Analysis' 탭, Hydraulic 17-센서는 별도 입력 계약이 필요합니다.",
                 )
                 risk_method_dd = gr.Dropdown(
                     choices=["weighted", "noisy_or", "max"],
@@ -651,7 +800,7 @@ with gr.Blocks(title="HybridPdM") as demo:
             )
 
             run_btn.click(
-                fn=run_analysis,
+                fn=_analysis_handler,
                 inputs=[
                     mode_dd,
                     dataset_dd,
@@ -763,7 +912,7 @@ with gr.Blocks(title="HybridPdM") as demo:
             )
             
             lstm_run_btn.click(
-                fn=run_lstm_analysis,
+                fn=_lstm_analysis_handler,
                 inputs=[
                     lstm_mode_dd,
                     lstm_dataset_dd,
@@ -873,9 +1022,41 @@ with gr.Blocks(title="HybridPdM") as demo:
         # ============================================================
         with gr.Tab("Report"):
             gr.Markdown(
-                "Analysis 탭 실행 후 생성된 Markdown report와 raw JSON은 해당 탭의 하단에서 확인할 수 있습니다.\n\n"
-                "LSTM Analysis 탭도 동일하게 탭 하단에서 report / raw JSON을 확인할 수 있습니다.\n\n"
-                "이 탭은 추후 보고서 저장/다운로드 기능을 확장하기 위한 자리입니다."
+                "분석 실행 시 자동 저장된 리포트 목록입니다. 행을 클릭하면 미리보기와 다운로드가 가능합니다."
+            )
+
+            with gr.Row():
+                reports_refresh_btn = gr.Button("Refresh")
+                reports_dir_md = gr.Markdown(
+                    value=f"- 저장 위치: `{config.REPORT_DIR}`"
+                )
+
+            saved_reports_df = gr.Dataframe(
+                headers=["File", "Saved At", "Size(bytes)"],
+                datatype=["str", "str", "str"],
+                label="Saved Reports",
+                value=list_saved_reports(),
+                interactive=False,
+            )
+
+            with gr.Row():
+                with gr.Column():
+                    saved_report_md = gr.Markdown(label="Report Preview")
+                with gr.Column():
+                    saved_report_json = gr.Code(label="Raw Result JSON", language="json")
+
+            saved_report_file = gr.File(label="Download Markdown")
+
+            reports_refresh_btn.click(
+                fn=list_saved_reports,
+                inputs=[],
+                outputs=[saved_reports_df],
+            )
+
+            saved_reports_df.select(
+                fn=load_report_preview,
+                inputs=[],
+                outputs=[saved_report_md, saved_report_json, saved_report_file],
             )
 
     gr.Markdown(

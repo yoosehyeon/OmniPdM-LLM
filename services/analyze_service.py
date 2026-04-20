@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+import logging
+from typing import Dict, Generator, List, Optional
 
 from services.evaluation_service import EvaluationService
 from services.explain_service import ExplainService
 from services.guardrail_service import GuardrailService
 from services.input_validation_service import InputValidationService
 from services.llm_service import LlmService
+from services.llm_tools import ToolDispatcher
 from services.pdm_service import PdmService
 from services.plot_service import PlotService
 from services.report_service import ReportService
@@ -14,9 +16,11 @@ from services.risk_service import RiskService
 from services.schemas import (
     AnalysisResult,
     LSTMAnalysisResult,
-    LSTMExplainResult,
     LSTMSequenceInput,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class AnalyzeService:
@@ -87,11 +91,18 @@ class AnalyzeService:
 
         exp = self.explain_service.explain(normalized_payload, pred)
 
+        tool_dispatcher = ToolDispatcher(
+            dataset_key=self.dataset_key,
+            pdm_service=self.pdm_service,
+            risk_service=self.risk_service,
+            base_payload=normalized_payload,
+        )
         llm = self.llm_service.generate(
             payload=normalized_payload,
             pred=pred,
             exp=exp,
             risk=risk,
+            tool_dispatcher=tool_dispatcher,
         )
 
         llm = self.guardrail_service.validate(
@@ -128,17 +139,144 @@ class AnalyzeService:
             report_markdown=report_markdown,
         )
 
+        raw_result = result.to_dict()
+        saved_md, _ = self._auto_save(
+            report_markdown=report_markdown,
+            raw_result=raw_result,
+            dataset_key=self.dataset_key,
+            asset_id="UNKNOWN",
+            prefix="scalar_report",
+        )
+
         return {
-            "validation_text": "정상",
+            "validation_text": self._compose_validation_text("정상", saved_md),
             "summary_text": result.summary_text,
             "explanation_text": result.explanation_text,
             "feature_plot": feature_plot,
             "sensor_plot": sensor_plot,
             "report_markdown": report_markdown,
-            "raw_result": result.to_dict(),
+            "raw_result": raw_result,
             "alert_text": "ALERT TRIGGERED"
             if str(risk.risk_level).upper() in {"CRITICAL", "WARNING"}
             else "NO ALERT",
+            "saved_report_path": saved_md,
+        }
+
+    # ------------------------------------------------------------------
+    # 스트리밍 scalar 입력 경로 (P3-①)
+    # - LLM generate_stream() 의 chunk 를 실시간으로 report_markdown 에 누적
+    # - 사전 단계 (pred/risk/exp/plot) 는 첫 yield 에 모두 포함
+    # - 스트림 종료 후 guardrail/evaluation/report 적용한 최종 dict 를 마지막 yield
+    # ------------------------------------------------------------------
+    def run_stream(self, payload: Dict[str, float]) -> Generator[dict, None, None]:
+        validation = self.validation_service.validate(payload)
+
+        if not validation.is_valid:
+            error_text = self._format_validation_errors(validation.issues)
+            yield {
+                "validation_text": error_text,
+                "summary_text": "입력 검증 실패",
+                "explanation_text": "",
+                "feature_plot": None,
+                "sensor_plot": None,
+                "report_markdown": f"# Validation Error\n\n{error_text}",
+                "raw_result": None,
+                "alert_text": "N/A",
+            }
+            return
+
+        normalized_payload = validation.normalized_payload
+        pred = self.pdm_service.predict(normalized_payload)
+        risk = self.risk_service.fuse(pred)
+        pred.risk_score = risk.risk_score
+        pred.risk_level = risk.risk_level
+
+        exp = self.explain_service.explain(normalized_payload, pred)
+
+        feature_plot = self.plot_service.build_feature_importance(exp)
+        sensor_plot = self.plot_service.build_sensor_snapshot(normalized_payload)
+
+        summary_text = self._build_summary_text(pred, risk)
+        explanation_text = self._build_scalar_explanation_text(exp)
+        alert_text = (
+            "ALERT TRIGGERED"
+            if str(risk.risk_level).upper() in {"CRITICAL", "WARNING"}
+            else "NO ALERT"
+        )
+
+        base_state = self._build_ui_base(
+            validation_text="정상",
+            summary_text=summary_text,
+            explanation_text=explanation_text,
+            feature_plot=feature_plot,
+            sensor_plot=sensor_plot,
+            alert_text=alert_text,
+        )
+
+        yield {
+            **base_state,
+            "report_markdown": "## LLM 분석 코멘트 (생성 중...)\n\n",
+            "raw_result": None,
+        }
+
+        gen = self.llm_service.generate_stream(normalized_payload, pred, exp, risk)
+        accumulated = ""
+        llm_result = None
+        try:
+            while True:
+                chunk = next(gen)
+                accumulated += chunk
+                yield {
+                    **base_state,
+                    "report_markdown": "## LLM 분석 코멘트 (생성 중...)\n\n" + accumulated,
+                    "raw_result": None,
+                }
+        except StopIteration as stop:
+            llm_result = stop.value
+
+        # 스트림 종료 후: guardrail → evaluation → 최종 report
+        llm_result = self.guardrail_service.validate(
+            llm_result=llm_result, pred=pred, exp=exp, risk=risk,
+        )
+        evaluation = self.evaluation_service.evaluate(llm_result, pred=pred, risk=risk)
+
+        report_markdown = self.report_service.generate(
+            payload=normalized_payload,
+            validation=validation,
+            pred=pred,
+            exp=exp,
+            risk=risk,
+            llm=llm_result,
+            evaluation=evaluation,
+        )
+
+        result = AnalysisResult(
+            validation=validation,
+            prediction=pred,
+            explanation=exp,
+            risk=risk,
+            llm=llm_result,
+            evaluation=evaluation,
+            summary_text=summary_text,
+            explanation_text=explanation_text,
+            report_markdown=report_markdown,
+        )
+
+        raw_result = result.to_dict()
+        saved_md, _ = self._auto_save(
+            report_markdown=report_markdown,
+            raw_result=raw_result,
+            dataset_key=self.dataset_key,
+            asset_id="UNKNOWN",
+            prefix="scalar_report",
+        )
+
+        yield {
+            **base_state,
+            "validation_text": self._compose_validation_text("정상", saved_md),
+            "report_markdown": report_markdown,
+            "raw_result": raw_result,
+            "saved_report_path": saved_md,
         }
 
     # ------------------------------------------------------------------
@@ -213,11 +351,18 @@ class AnalyzeService:
             rul_norm=pred.rul_norm,
         )
 
+        tool_dispatcher = ToolDispatcher(
+            dataset_key=resolved_dataset_key,
+            pdm_service=self.pdm_service,
+            risk_service=self.risk_service,
+            base_payload=None,
+        )
         llm = self.llm_service.generate(
             payload=explain_payload,
             pred=pred,
             exp=exp,
             risk=risk,
+            tool_dispatcher=tool_dispatcher,
         )
 
         llm = self.guardrail_service.validate(
@@ -235,7 +380,7 @@ class AnalyzeService:
             feature_names=validation.feature_names,
         )
 
-        report_markdown = self._generate_lstm_report_markdown(
+        report_markdown = self.report_service.generate_lstm(
             asset_id=asset_id,
             validation=validation,
             pred=pred,
@@ -258,15 +403,24 @@ class AnalyzeService:
         )
 
         raw_result = result.to_dict()
-        
+        saved_md, _ = self._auto_save(
+            report_markdown=report_markdown,
+            raw_result=raw_result,
+            dataset_key=resolved_dataset_key,
+            asset_id=asset_id,
+            prefix="lstm_report",
+        )
+
+        base_validation_text = (
+            f"정상\n"
+            f"- dataset_key: {validation.dataset_key}\n"
+            f"- timesteps: {validation.timesteps}\n"
+            f"- feature_dim: {validation.feature_dim}\n"
+            f"- asset_id: {asset_id}"
+        )
+
         return {
-            "validation_text": (
-                f"정상\n"
-                f"- dataset_key: {validation.dataset_key}\n"
-                f"- timesteps: {validation.timesteps}\n"
-                f"- feature_dim: {validation.feature_dim}\n"
-                f"- asset_id: {asset_id}"
-            ),
+            "validation_text": self._compose_validation_text(base_validation_text, saved_md),
             "summary_text": result.summary_text,
             "explanation_text": result.explanation_text,
             "feature_plot": feature_plot,
@@ -276,7 +430,211 @@ class AnalyzeService:
             "alert_text": "ALERT TRIGGERED"
             if str(risk.risk_level).upper() in {"CRITICAL", "WARNING"}
             else "NO ALERT",
+            "saved_report_path": saved_md,
         }
+
+    # ------------------------------------------------------------------
+    # 스트리밍 LSTM sequence 입력 경로 (P3-①)
+    # ------------------------------------------------------------------
+    def run_lstm_stream(
+        self,
+        sequence: List[List[float]],
+        feature_names: Optional[List[str]] = None,
+        asset_id: str = "UNKNOWN",
+        dataset_key: Optional[str] = None,
+    ) -> Generator[dict, None, None]:
+        resolved_dataset_key = dataset_key or self.dataset_key
+
+        lstm_payload = LSTMSequenceInput(
+            sequence=sequence,
+            feature_names=feature_names,
+            asset_id=asset_id,
+            dataset_key=resolved_dataset_key,
+        )
+
+        validation = self.validation_service.validate_lstm_sequence_payload(lstm_payload)
+
+        if not validation.is_valid:
+            error_text = self._format_validation_errors(validation.issues)
+            yield {
+                "validation_text": error_text,
+                "summary_text": "LSTM 입력 검증 실패",
+                "explanation_text": "",
+                "feature_plot": None,
+                "sensor_plot": None,
+                "report_markdown": f"# LSTM Validation Error\n\n{error_text}",
+                "raw_result": None,
+                "alert_text": "N/A",
+            }
+            return
+
+        pred = self.pdm_service.predict_lstm_sequence(
+            sequence=validation.normalized_sequence,
+            feature_names=validation.feature_names,
+        )
+        risk = self.risk_service.fuse(pred)
+        pred.risk_score = risk.risk_score
+        pred.risk_level = risk.risk_level
+
+        explain_payload = self._build_lstm_explain_payload(
+            sequence=validation.normalized_sequence,
+            feature_names=validation.feature_names,
+        )
+        exp = self.explain_service.explain_lstm_sequence(
+            sequence=validation.normalized_sequence,
+            feature_names=validation.feature_names,
+            top_contributors=pred.top_contributors,
+            predicted_label=pred.predicted_label,
+            failure_probability=pred.failure_probability,
+            rul_norm=pred.rul_norm,
+        )
+
+        feature_plot = self.plot_service.build_lstm_feature_importance(exp)
+        sensor_plot = self.plot_service.build_lstm_sequence_snapshot(
+            sequence=validation.normalized_sequence,
+            feature_names=validation.feature_names,
+        )
+
+        summary_text = self._build_summary_text(pred, risk)
+        explanation_text = exp.explanation_text
+        validation_text = (
+            f"정상\n"
+            f"- dataset_key: {validation.dataset_key}\n"
+            f"- timesteps: {validation.timesteps}\n"
+            f"- feature_dim: {validation.feature_dim}\n"
+            f"- asset_id: {asset_id}"
+        )
+        alert_text = (
+            "ALERT TRIGGERED"
+            if str(risk.risk_level).upper() in {"CRITICAL", "WARNING"}
+            else "NO ALERT"
+        )
+
+        base_state = self._build_ui_base(
+            validation_text=validation_text,
+            summary_text=summary_text,
+            explanation_text=explanation_text,
+            feature_plot=feature_plot,
+            sensor_plot=sensor_plot,
+            alert_text=alert_text,
+        )
+
+        yield {
+            **base_state,
+            "report_markdown": "## LLM 분석 코멘트 (생성 중...)\n\n",
+            "raw_result": None,
+        }
+
+        gen = self.llm_service.generate_stream(explain_payload, pred, exp, risk)
+        accumulated = ""
+        llm_result = None
+        try:
+            while True:
+                chunk = next(gen)
+                accumulated += chunk
+                yield {
+                    **base_state,
+                    "report_markdown": "## LLM 분석 코멘트 (생성 중...)\n\n" + accumulated,
+                    "raw_result": None,
+                }
+        except StopIteration as stop:
+            llm_result = stop.value
+
+        llm_result = self.guardrail_service.validate(
+            llm_result=llm_result, pred=pred, exp=exp, risk=risk,
+        )
+        evaluation = self.evaluation_service.evaluate(llm_result, pred=pred, risk=risk)
+
+        report_markdown = self.report_service.generate_lstm(
+            asset_id=asset_id,
+            validation=validation,
+            pred=pred,
+            exp=exp,
+            risk=risk,
+            llm=llm_result,
+            evaluation=evaluation,
+        )
+
+        result = LSTMAnalysisResult(
+            validation=validation,
+            prediction=pred,
+            explanation=exp,
+            risk=risk,
+            llm=llm_result,
+            evaluation=evaluation,
+            summary_text=summary_text,
+            explanation_text=explanation_text,
+            report_markdown=report_markdown,
+        )
+
+        raw_result = result.to_dict()
+        saved_md, _ = self._auto_save(
+            report_markdown=report_markdown,
+            raw_result=raw_result,
+            dataset_key=resolved_dataset_key,
+            asset_id=asset_id,
+            prefix="lstm_report",
+        )
+
+        yield {
+            **base_state,
+            "validation_text": self._compose_validation_text(validation_text, saved_md),
+            "report_markdown": report_markdown,
+            "raw_result": raw_result,
+            "saved_report_path": saved_md,
+        }
+
+    # ------------------------------------------------------------------
+    # Helper: auto-save + validation 텍스트 조합
+    # ------------------------------------------------------------------
+    def _auto_save(
+        self,
+        report_markdown: str,
+        raw_result: Optional[Dict],
+        dataset_key: str,
+        asset_id: str,
+        prefix: str,
+    ) -> tuple[Optional[str], Optional[str]]:
+        try:
+            return self.report_service.save_report_bundle(
+                report_markdown=report_markdown,
+                raw_result=raw_result,
+                dataset_key=dataset_key,
+                asset_id=asset_id,
+                prefix=prefix,
+            )
+        except Exception as e:
+            logger.warning(
+                "auto-save report failed (prefix=%s dataset=%s asset=%s): %s: %s",
+                prefix, dataset_key, asset_id, type(e).__name__, e,
+            )
+            return None, None
+
+    @staticmethod
+    def _build_ui_base(
+        *,
+        validation_text: str,
+        summary_text: str,
+        explanation_text: str,
+        feature_plot,
+        sensor_plot,
+        alert_text: str,
+    ) -> Dict:
+        return {
+            "validation_text": validation_text,
+            "summary_text": summary_text,
+            "explanation_text": explanation_text,
+            "feature_plot": feature_plot,
+            "sensor_plot": sensor_plot,
+            "alert_text": alert_text,
+        }
+
+    @staticmethod
+    def _compose_validation_text(base: str, saved_md: Optional[str]) -> str:
+        if not saved_md:
+            return base
+        from pathlib import Path as _P
+        return f"{base}\n- saved: {_P(saved_md).name}"
 
     # ------------------------------------------------------------------
     # Helper: 기존 summary
@@ -341,80 +699,3 @@ class AnalyzeService:
 
         return {str(name): float(value) for name, value in zip(feature_names, latest)}
 
-    # ------------------------------------------------------------------
-    # Helper: LSTM report markdown
-    # ------------------------------------------------------------------
-    def _generate_lstm_report_markdown(
-        self,
-        asset_id: str,
-        validation,
-        pred,
-        exp,
-        risk,
-        llm,
-        evaluation,
-    ) -> str:
-        issue_lines = []
-        for issue in validation.issues:
-            issue_lines.append(f"- [{issue.level}] {issue.field}: {issue.message}")
-
-        top_features_md = "\n".join(
-            [
-                f"- {item['feature']}: importance={item['importance']}"
-                for item in exp.top_features
-            ]
-        ) if exp.top_features else "- 없음"
-
-        temporal_summary = exp.temporal_summary or {}
-
-        return f"""# HybridPdM LSTM Analysis Report
-
-## 1. Input Summary
-- asset_id: {asset_id}
-- dataset_key: {validation.dataset_key}
-- timesteps: {validation.timesteps}
-- feature_dim: {validation.feature_dim}
-- feature_names: {validation.feature_names}
-
-## 2. Validation
-{'정상' if validation.is_valid else '오류 있음'}
-
-{chr(10).join(issue_lines) if issue_lines else '- 없음'}
-
-## 3. Prediction
-- dataset_key: {pred.dataset_key}
-- task_type: {pred.task_type}
-- model_name: {pred.model_name}
-- model_mode: {pred.model_mode}
-- predicted_label: {pred.predicted_label}
-- failure_probability: {pred.failure_probability}
-- anomaly_score: {pred.anomaly_score}
-- rul_norm: {pred.rul_norm}
-
-## 4. Risk
-- risk_score: {risk.risk_score}
-- risk_level: {risk.risk_level}
-- method: {risk.method}
-- weights: {risk.weights}
-
-## 5. Explanation
-{exp.explanation_text}
-
-### Top Features
-{top_features_md}
-
-### Temporal Summary
-- most_recent_drivers: {temporal_summary.get("most_recent_drivers", [])}
-- largest_variation_features: {temporal_summary.get("largest_variation_features", [])}
-- timesteps: {temporal_summary.get("timesteps", "N/A")}
-- feature_dim: {temporal_summary.get("feature_dim", "N/A")}
-
-## 6. LLM Recommendation
-{llm.text}
-
-## 7. Evaluation
-- structure_ok: {evaluation.structure_ok}
-- factuality_ok: {evaluation.factuality_ok}
-- overall_score: {evaluation.overall_score}
-- notes: {evaluation.notes}
-"""
