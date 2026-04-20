@@ -102,15 +102,11 @@ hybridpdm_gradio/
 │   ├── system_pdm_assistant.txt
 │   └── user_context_template.json
 │
-├── schemas/
-│   └── input_schema.py
-│
-├── utils/
-│   └── sample_cases.py
-│
-└── tests (루트)
+└── tests/
+    ├── test_smoke.py
     ├── test_validation_step.py
     ├── test_pdm_lstm_step.py
+    ├── test_llm_stream_step.py
     └── test_analyze_lstm_step.py
 ```
 
