@@ -21,15 +21,70 @@ import torch
 import torch.nn as nn
 from sklearn.metrics import (
     accuracy_score,
+    average_precision_score,
+    confusion_matrix,
     f1_score,
     mean_absolute_error,
     mean_squared_error,
     precision_score,
     r2_score,
     recall_score,
+    roc_auc_score,
 )
 
 from models_core import config
+
+
+# ---------------------------------------------------------------------------
+# NASA PHM08 asymmetric scoring (C-MAPSS / N-CMAPSS 표준)
+# ---------------------------------------------------------------------------
+# 정의: d = predicted_RUL - true_RUL
+#   d >= 0  (late prediction, 위험)   : exp(d / 10) - 1
+#   d <  0  (early prediction, 안전)  : exp(-d / 13) - 1
+# 모든 sample 합산. 값이 작을수록 좋음. RMSE 와 다른 의사결정 비용 metric.
+# 참조: NASA PHM 2008 Data Challenge, Saxena et al. 2008.
+
+def nasa_phm_score(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
+    """NASA PHM Score (asymmetric). 합산값과 mean 모두 반환."""
+    y_true = np.asarray(y_true, dtype=np.float64).reshape(-1)
+    y_pred = np.asarray(y_pred, dtype=np.float64).reshape(-1)
+    d = y_pred - y_true                          # late 양수, early 음수
+    # 수치 안정성: exp overflow 방지 (d=300 정도면 exp(30) 폭주)
+    d_clipped = np.clip(d, -500, 500)
+    score_late  = np.exp(d_clipped[d_clipped >= 0] / 10.0) - 1.0
+    score_early = np.exp(-d_clipped[d_clipped < 0] / 13.0) - 1.0
+    total = float(score_late.sum() + score_early.sum())
+    n = max(1, len(d_clipped))
+    return {
+        "nasa_score_sum":  total,
+        "nasa_score_mean": total / n,
+        "n_late":          int((d >= 0).sum()),
+        "n_early":         int((d <  0).sum()),
+    }
+
+
+def _classification_extras(
+    y_true: np.ndarray, y_pred: np.ndarray, y_proba: Optional[np.ndarray] = None
+) -> Dict:
+    """confusion matrix + PR-AUC + ROC-AUC (proba 있을 때) 공통 계산."""
+    cm = confusion_matrix(y_true, y_pred)
+    out: Dict = {
+        "confusion_matrix": cm.tolist(),  # JSON 직렬화 가능
+    }
+    # binary 의 경우 cm 은 2x2 → TN/FP/FN/TP 분해
+    if cm.shape == (2, 2):
+        tn, fp, fn, tp = cm.ravel().tolist()
+        out["tn"], out["fp"], out["fn"], out["tp"] = tn, fp, fn, tp
+        out["specificity"] = float(tn / max(1, tn + fp))
+        out["false_alarm_rate"] = float(fp / max(1, fp + tn))
+    if y_proba is not None:
+        try:
+            out["pr_auc"]  = float(average_precision_score(y_true, y_proba))
+            out["roc_auc"] = float(roc_auc_score(y_true, y_proba))
+        except ValueError:
+            # 단일 클래스만 있을 때
+            pass
+    return out
 
 # ---------------------------------------------------------------------------
 # 공통 추론 헬퍼
@@ -114,7 +169,7 @@ def evaluate_classifier(
         probs = 1.0 / (1.0 + np.exp(-logits))   # 수치 안정성을 위해 직접 sigmoid
         y_pred = (probs > used_threshold).astype(np.int32)
         y_true_i = y_true.astype(np.int32)
-        return {
+        result = {
             "name": name,
             "task": "binary_classification",
             "decision_threshold": used_threshold,
@@ -127,11 +182,13 @@ def evaluate_classifier(
             "f1":        float(f1_score(y_true_i, y_pred, zero_division=0)),
             "n_test":    int(len(y_true)),
         }
+        result.update(_classification_extras(y_true_i, y_pred, y_proba=probs))
+        return result
 
     # 다중 분류
     y_pred = logits.argmax(axis=1).astype(np.int32)
     y_true_i = y_true.astype(np.int32)
-    return {
+    result = {
         "name": name,
         "task": "multiclass_classification",
         "n_classes": n_classes,
@@ -141,6 +198,9 @@ def evaluate_classifier(
         "f1":        float(f1_score(y_true_i, y_pred, average="macro", zero_division=0)),
         "n_test":    int(len(y_true)),
     }
+    # 다중 분류는 proba 없이 confusion matrix 만 (PR-AUC/ROC-AUC 는 binary 전용)
+    result.update(_classification_extras(y_true_i, y_pred, y_proba=None))
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +285,87 @@ def evaluate_autoencoder(
 
 
 # ---------------------------------------------------------------------------
+# 2b) VAE 평가 (ELBO-based anomaly score + percentile grid search)
+# ---------------------------------------------------------------------------
+
+def evaluate_vae(
+    name: str,
+    data: Dict,
+    model: nn.Module,
+    percentile_grid: Optional[List[int]] = None,
+    score_mode: str = "elbo_neg",
+) -> Dict:
+    """VAE 이상 탐지 평가.
+
+    동작 (evaluate_autoencoder 와 유사한 percentile grid search):
+      1) train(정상) 의 anomaly_score 분포에서 각 percentile 을 threshold 후보로
+      2) val set 에서 각 threshold 의 F1 측정, best 선택
+      3) test 성능 보고
+
+    score_mode 옵션:
+      - "elbo_neg"   : reconstruction MSE + beta * KL (기본, ELBO 음수)
+      - "recon_only" : MSE 만 (DenoisingAE 와 동일 비교 가능)
+      - "combined"   : 0.7 * recon + 0.3 * KL
+    """
+    if percentile_grid is None:
+        percentile_grid = config.VAE_CFG["threshold_grid"]
+
+    device = torch.device(config.get_device())
+    model.to(device)
+    model.eval()
+
+    # anomaly_score 가 model 메서드이므로 _batched_infer 의 fn 인자 활용
+    fn = lambda m, x: m.anomaly_score(x, mode=score_mode)
+
+    # 1) 정상 train 점수 분포
+    score_train = _batched_infer(model, data["X_train"], device, fn=fn)
+    if score_train.size == 0:
+        raise RuntimeError("evaluate_vae: empty X_train")
+
+    # 2) val set 에서 percentile 별 F1
+    score_val = _batched_infer(model, data["X_val"], device, fn=fn)
+    y_val = np.asarray(data["y_val"]).astype(np.int32)
+
+    grid_results = []
+    best = {"percentile": None, "threshold": None, "f1": -1.0}
+    for p in percentile_grid:
+        thr = float(np.percentile(score_train, p))
+        y_pred = (score_val > thr).astype(np.int32)
+        f1 = float(f1_score(y_val, y_pred, zero_division=0))
+        grid_results.append({"percentile": p, "threshold": thr, "val_f1": f1})
+        if f1 > best["f1"]:
+            best = {"percentile": p, "threshold": thr, "f1": f1}
+
+    # 3) test 평가
+    if best["threshold"] is None:
+        raise RuntimeError("evaluate_vae: percentile_grid is empty")
+    model.threshold = best["threshold"]
+
+    score_test = _batched_infer(model, data["X_test"], device, fn=fn)
+    y_test = np.asarray(data["y_test"]).astype(np.int32)
+    y_pred_test = (score_test > best["threshold"]).astype(np.int32)
+
+    result = {
+        "name": name,
+        "task": "anomaly_detection_vae",
+        "score_mode": score_mode,
+        "best_percentile": best["percentile"],
+        "best_threshold":  best["threshold"],
+        "val_f1_at_best":  best["f1"],
+        "test_accuracy":   float(accuracy_score(y_test, y_pred_test)),
+        "test_precision":  float(precision_score(y_test, y_pred_test, zero_division=0)),
+        "test_recall":     float(recall_score(y_test, y_pred_test, zero_division=0)),
+        "test_f1":         float(f1_score(y_test, y_pred_test, zero_division=0)),
+        "grid":            grid_results,
+        "n_test":          int(len(y_test)),
+        # raw scores 도 함께 반환 (앙상블 fusion 에서 활용)
+        "_test_scores":    score_test.tolist(),
+        "_y_test":         y_test.tolist(),
+    }
+    return result
+
+
+# ---------------------------------------------------------------------------
 # 3) RUL 회귀 평가
 # ---------------------------------------------------------------------------
 
@@ -256,6 +397,10 @@ def evaluate_regressor(
     rmse = float(np.sqrt(mse))
     mae  = float(mean_absolute_error(y, pred))
     r2   = float(r2_score(y, pred))
+
+    # NASA PHM asymmetric score (RUL 표준 metric)
+    score = nasa_phm_score(y, pred)
+
     return {
         "name": name,
         "task": "regression",
@@ -263,6 +408,10 @@ def evaluate_regressor(
         "mae":  mae,
         "mse":  mse,
         "r2":   r2,
+        "nasa_score_sum":  score["nasa_score_sum"],
+        "nasa_score_mean": score["nasa_score_mean"],
+        "n_late":          score["n_late"],
+        "n_early":         score["n_early"],
         "n_test": int(len(y)),
         "rul_norm": bool(rul_norm),
     }
@@ -302,7 +451,7 @@ def evaluate_gbdt_classifier(
             used_thr = val_best["threshold"]
 
     y_pred = (proba_test > used_thr).astype(np.int32)
-    return {
+    result = {
         "name": name,
         "task": "gbdt_binary",
         "decision_threshold": float(used_thr),
@@ -317,6 +466,8 @@ def evaluate_gbdt_classifier(
         "f1":        float(f1_score(y_test, y_pred, zero_division=0)),
         "n_test":    int(len(y_test)),
     }
+    result.update(_classification_extras(y_test, y_pred, y_proba=proba_test))
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +479,7 @@ EVALUATORS = {
     "binary_classification":  evaluate_classifier,
     "multiclass":             evaluate_classifier,
     "anomaly_detection":      evaluate_autoencoder,
+    "anomaly_detection_vae":  evaluate_vae,
     "regression":             evaluate_regressor,
     "gbdt_binary":            evaluate_gbdt_classifier,
 }

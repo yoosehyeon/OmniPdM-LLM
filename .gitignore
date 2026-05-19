@@ -21,6 +21,11 @@ env/
 logs/
 *.log
 
+# MLflow tracking
+mlflow.db
+mlruns/
+mlartifacts/
+
 # Datasets (public — see README for download links)
 models_core/dataset/
 
