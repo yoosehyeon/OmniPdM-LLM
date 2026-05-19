@@ -41,21 +41,44 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 
 from models_core import config
+from models_core import models
 
 # ---------------------------------------------------------------------------
-# 실행별 식별자 (run_id)
+# 실행별 식별자 (run_id + seed suffix)
 # ---------------------------------------------------------------------------
 # main.py가 학습 시작 전 set_run_id()를 호출하여 설정한다.
 # 설정된 경우 체크포인트 파일명에 포함되어 실행별 결과가 누적 보존된다.
-# 예: ai4i_cnn_20250409_153022.pt
+#
+# 단일 seed (기본 42) 시 파일명 패턴: <name>_<run_id>.pt
+#   예: ai4i_cnn_20250409_153022.pt
+# Multi-seed (seed != 42) 시 파일명 패턴: <name>_<run_id>_seed<N>.pt
+#   예: cmapss_lstm_20250409_153022_seed43.pt
+# → seed=42 단일 학습 시 기존 파일명과 동일 (backward compatible).
 
 _RUN_ID: str = ""
+_SEED_SUFFIX: str = ""
 
 
 def set_run_id(run_id: str) -> None:
     """run_id를 설정. main.py에서 학습 시작 전 한 번 호출."""
     global _RUN_ID
     _RUN_ID = run_id
+
+
+def set_seed_suffix(seed: int) -> None:
+    """seed 값에 따라 체크포인트 파일명 접미사를 갱신.
+
+    seed=42 (기본) 또는 0 이하인 경우 빈 문자열로 설정해 기존 파일명과 호환.
+    그 외 seed 는 '_seed<N>' 형태로 파일명에 포함되어 multi-seed 학습 시 덮어쓰기 방지.
+    """
+    global _SEED_SUFFIX
+    _SEED_SUFFIX = "" if seed == 42 else f"_seed{seed}"
+
+
+def _ckpt_suffix() -> str:
+    """체크포인트 파일명 접미사 조합. run_id 와 seed_suffix 결합."""
+    base = f"_{_RUN_ID}" if _RUN_ID else ""
+    return f"{base}{_SEED_SUFFIX}"
 
 
 # ---------------------------------------------------------------------------
@@ -261,10 +284,11 @@ def _json_safe(obj):
 def _save_checkpoint(name: str, model: nn.Module, metrics: Dict) -> Tuple[Path, Path]:
     """가중치(.pt)와 메트릭(.json)을 분리 저장.
 
-    _RUN_ID가 설정되어 있으면 파일명에 포함하여 실행별 결과를 누적 보존한다.
-    예: ai4i_cnn_20250409_153022.pt / ai4i_cnn_20250409_153022.json
+    _RUN_ID + _SEED_SUFFIX 조합을 파일명에 포함하여 multi-seed 학습 시 덮어쓰기 방지.
+    예: ai4i_cnn_20250409_153022.pt              (seed=42 기본)
+        cmapss_lstm_20250409_153022_seed43.pt    (seed=43)
     """
-    suffix = f"_{_RUN_ID}" if _RUN_ID else ""
+    suffix = _ckpt_suffix()
     pt_path   = config.CHECKPOINT_DIR / f"{name}{suffix}.pt"
     json_path = config.CHECKPOINT_DIR / f"{name}{suffix}.json"
     torch.save(model.state_dict(), pt_path)
@@ -503,6 +527,146 @@ def train_autoencoder(
 
 
 # ---------------------------------------------------------------------------
+# 2b) VAE 학습 (이상 탐지 — ELBO)
+# ---------------------------------------------------------------------------
+
+def _vae_epoch_pass(
+    model: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    beta: float = 1.0,
+    optimizer: Optional[torch.optim.Optimizer] = None,
+    grad_clip: float = 1.0,
+) -> float:
+    """VAE 한 epoch — ELBO 음수 (recon MSE + beta*KL) 평균 반환."""
+    is_train = optimizer is not None
+    model.train(is_train)
+    total_loss = 0.0
+    total_n = 0
+    ctx = torch.enable_grad() if is_train else torch.no_grad()
+    with ctx:
+        for xb, _yb in loader:
+            xb = xb.to(device, non_blocking=True)
+            recon, mu, logvar = model(xb)
+            loss = models.VariationalAutoencoder.vae_loss(recon, xb, mu, logvar, beta=beta)
+            if is_train:
+                optimizer.zero_grad()
+                loss.backward()
+                if grad_clip > 0:
+                    nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                optimizer.step()
+            bs = xb.size(0)
+            total_loss += loss.item() * bs
+            total_n += bs
+    return total_loss / max(total_n, 1)
+
+
+@torch.no_grad()
+def _compute_anomaly_scores_batched(
+    model: nn.Module,
+    X: np.ndarray,
+    device: torch.device,
+    batch_size: int,
+    score_mode: str = "elbo_neg",
+) -> np.ndarray:
+    """대용량 데이터에서도 안전하게 anomaly score 추출 (batched, no OOM)."""
+    model.eval()
+    out_chunks: List[np.ndarray] = []
+    n = len(X)
+    for i in range(0, n, batch_size):
+        xb = torch.as_tensor(X[i:i + batch_size], dtype=torch.float32, device=device)
+        s = model.anomaly_score(xb, mode=score_mode)
+        out_chunks.append(s.detach().cpu().numpy())
+    if not out_chunks:
+        return np.empty((0,), dtype=np.float32)
+    return np.concatenate(out_chunks, axis=0)
+
+
+def train_vae(
+    name: str,
+    data: Dict,
+    model: nn.Module,
+    cfg: Optional[Dict] = None,
+) -> Dict:
+    """VAE 학습 → train 분포의 anomaly_score percentile 95 로 초기 threshold 설정.
+
+    Contract:
+        data["X_train"] 은 정상(label=0) 샘플만 포함 (data_pipeline.load_*_ae 가 보장).
+        data["X_val"]   는 정상+이상 혼재 가능 (val loss 추세 추적용 — reconstruction-only
+                        모델 특성상 anomaly 가 섞여 있어도 학습 monitor 로 활용 가능,
+                        다만 early stopping 의 정밀도는 정상 only 일 때 더 높다).
+    """
+    if cfg is None:
+        cfg = config.VAE_CFG
+
+    # contract
+    y_tr = np.asarray(data["y_train"])
+    assert (y_tr == 0).all(), (
+        f"train_vae contract violation: X_train must contain only normal samples"
+    )
+
+    device = torch.device(config.get_device())
+    model.to(device)
+    beta = float(cfg.get("beta", 1.0))
+
+    train_loader = _make_loader(
+        data["X_train"], data["y_train"],
+        cfg["batch_size"], shuffle=True, y_dtype=torch.float32,
+    )
+    val_loader = _make_loader(
+        data["X_val"], data["y_val"],
+        cfg["batch_size"], shuffle=False, y_dtype=torch.float32,
+    )
+
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=cfg["lr"],
+        weight_decay=cfg.get("weight_decay", 1e-5),
+    )
+    stopper = EarlyStopping(patience=cfg.get("early_stop_patience", 12))
+    history: List[Dict] = []
+    grad_clip = float(cfg.get("grad_clip", 1.0))
+
+    for epoch in range(1, cfg["epochs"] + 1):
+        train_loss = _vae_epoch_pass(model, train_loader, device, beta=beta,
+                                     optimizer=optimizer, grad_clip=grad_clip)
+        val_loss = _vae_epoch_pass(model, val_loader, device, beta=beta, optimizer=None)
+        history.append({"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss})
+        stopper.step(val_loss, model, epoch)
+        if stopper.should_stop:
+            break
+
+    stopper.restore(model)
+
+    # 초기 threshold: train set 의 anomaly_score 95 percentile (batched, OOM-safe)
+    score_mode = cfg.get("anomaly_score_mode", "elbo_neg")
+    scores = _compute_anomaly_scores_batched(
+        model, data["X_train"], device, batch_size=cfg["batch_size"] * 4,
+        score_mode=score_mode,
+    )
+    init_thr = float(np.percentile(scores, 95.0))
+    model.threshold = init_thr  # VAE 클래스에 self.threshold 가 이미 선언됨
+
+    metrics = {
+        "name": name,
+        "task": "anomaly_detection",
+        "model_family": "vae",
+        "best_val": stopper.best_score,
+        "best_epoch": stopper.best_epoch,
+        "stopped_at": history[-1]["epoch"] if history else 0,
+        "anomaly_score_mode": score_mode,
+        "init_threshold_percentile": 95.0,
+        "init_threshold_value": init_thr,
+        "beta": beta,
+        "history": history,
+    }
+    pt, js = _save_checkpoint(name, model, metrics)
+    metrics["checkpoint"] = str(pt)
+    metrics["metrics_json"] = str(js)
+    return metrics
+
+
+# ---------------------------------------------------------------------------
 # 3) LSTM 회귀 학습
 # ---------------------------------------------------------------------------
 
@@ -630,7 +794,7 @@ def train_gbdt_classifier(
     }
 
     # 체크포인트: pickle (sklearn 표준)
-    suffix = f"_{_RUN_ID}" if _RUN_ID else ""
+    suffix = _ckpt_suffix()
     pkl_path  = config.CHECKPOINT_DIR / f"{name}{suffix}.pkl"
     json_path = config.CHECKPOINT_DIR / f"{name}{suffix}.json"
     with open(pkl_path, "wb") as f:
@@ -648,8 +812,9 @@ def train_gbdt_classifier(
 # ---------------------------------------------------------------------------
 
 TRAINERS: Dict[str, Callable] = {
-    "classification":    train_cnn_classifier,
-    "anomaly_detection": train_autoencoder,
-    "regression":        train_lstm_regressor,
-    "gbdt_binary":       train_gbdt_classifier,
+    "classification":         train_cnn_classifier,
+    "anomaly_detection":      train_autoencoder,
+    "anomaly_detection_vae":  train_vae,
+    "regression":             train_lstm_regressor,
+    "gbdt_binary":            train_gbdt_classifier,
 }

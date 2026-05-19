@@ -443,6 +443,115 @@ class DenoisingAE(nn.Module):
 
 
 # ===========================================================================
+# 2b) Variational Autoencoder (이상 탐지, ELBO 기반)
+# DenoisingAE 대비 강점:
+#   - 확률적 latent → 더 매끄러운 분포 학습
+#   - ELBO (recon + KL) 두 가지 이상 신호 동시 사용 가능
+#   - Isolation Forest 와 앙상블 시 다양성 ↑ (rank-based fusion)
+#
+# 구조:
+#   x (B, F) → encoder → (mu, logvar) (B, latent)
+#           → reparameterize → z = mu + sigma * eps
+#           → decoder → x_recon (B, F)
+#
+# 이상 점수 (3 가지 선택):
+#   - recon_only       : ||x - x_recon||^2  (DenoisingAE 와 비교 가능)
+#   - elbo_neg         : recon + beta * KL  (ELBO 음수)
+#   - combined         : alpha * recon + beta * KL  (가중 결합)
+# ===========================================================================
+
+class VariationalAutoencoder(nn.Module):
+    """간단한 tabular VAE — Hydraulic 17 sensor 입력 용 (확장 가능)."""
+
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int = 32,
+        latent_dim: int = 8,
+        beta: float = 1.0,
+    ):
+        super().__init__()
+        self.input_dim = input_dim
+        self.latent_dim = latent_dim
+        self.beta = beta
+
+        # Encoder: x → hidden → (mu, logvar)
+        self.enc_fc1 = nn.Linear(input_dim, hidden_dim * 2)
+        self.enc_fc2 = nn.Linear(hidden_dim * 2, hidden_dim)
+        self.fc_mu = nn.Linear(hidden_dim, latent_dim)
+        self.fc_logvar = nn.Linear(hidden_dim, latent_dim)
+
+        # Decoder: z → hidden → x_recon
+        self.dec_fc1 = nn.Linear(latent_dim, hidden_dim)
+        self.dec_fc2 = nn.Linear(hidden_dim, hidden_dim * 2)
+        self.dec_out = nn.Linear(hidden_dim * 2, input_dim)
+
+        # threshold (anomaly 판정용, fit 후 채워짐)
+        self.threshold: Optional[float] = None
+
+    def encode(self, x: torch.Tensor):
+        h = torch.relu(self.enc_fc1(x))
+        h = torch.relu(self.enc_fc2(h))
+        return self.fc_mu(h), self.fc_logvar(h)
+
+    @staticmethod
+    def reparameterize(mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
+        # std 안정성: logvar clamp
+        logvar = torch.clamp(logvar, min=-10, max=10)
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+    def decode(self, z: torch.Tensor) -> torch.Tensor:
+        h = torch.relu(self.dec_fc1(z))
+        h = torch.relu(self.dec_fc2(h))
+        return self.dec_out(h)
+
+    def forward(self, x: torch.Tensor):
+        """학습용 forward → (recon, mu, logvar)."""
+        mu, logvar = self.encode(x)
+        z = self.reparameterize(mu, logvar)
+        recon = self.decode(z)
+        return recon, mu, logvar
+
+    @staticmethod
+    def vae_loss(
+        recon: torch.Tensor, x: torch.Tensor,
+        mu: torch.Tensor, logvar: torch.Tensor, beta: float = 1.0,
+    ) -> torch.Tensor:
+        """ELBO 음수 (reconstruction MSE + beta * KL divergence)."""
+        recon_loss = torch.nn.functional.mse_loss(recon, x, reduction="mean")
+        # KL(q(z|x) || N(0,I))
+        logvar_c = torch.clamp(logvar, min=-10, max=10)
+        kl = -0.5 * torch.mean(1 + logvar_c - mu.pow(2) - logvar_c.exp())
+        return recon_loss + beta * kl
+
+    @torch.no_grad()
+    def anomaly_score(self, x: torch.Tensor, mode: str = "elbo_neg") -> torch.Tensor:
+        """추론용 이상 점수 (값 클수록 이상).
+
+        mode:
+            "recon_only" : ||x - recon||^2 (DenoisingAE 와 동일 비교 가능)
+            "elbo_neg"   : recon + beta * KL (ELBO 음수)
+            "combined"   : 0.7 * recon + 0.3 * KL (가중 합)
+        """
+        self.eval()
+        mu, logvar = self.encode(x)
+        # 추론은 deterministic (mu 사용)
+        recon = self.decode(mu)
+        recon_err = ((x - recon) ** 2).mean(dim=1)
+        if mode == "recon_only":
+            return recon_err
+        logvar_c = torch.clamp(logvar, min=-10, max=10)
+        kl_per_sample = -0.5 * (1 + logvar_c - mu.pow(2) - logvar_c.exp()).sum(dim=1)
+        if mode == "elbo_neg":
+            return recon_err + self.beta * kl_per_sample
+        if mode == "combined":
+            return 0.7 * recon_err + 0.3 * kl_per_sample
+        raise ValueError(f"Unknown anomaly_score mode: {mode}")
+
+
+# ===========================================================================
 # 3) BiLSTM + Self-Attention Pooling (RUL 회귀)
 # ===========================================================================
 
@@ -529,23 +638,374 @@ class BiLSTMRegressor(nn.Module):
 
 
 # ===========================================================================
+# DLinear (Zeng et al. 2023, "Are Transformers Effective for Time Series Forecasting?")
+# RUL 회귀용 변형: 마지막에 채널 aggregation MLP 추가
+# ===========================================================================
+
+class _MovingAverage(nn.Module):
+    """Trend 추출용 1D moving average (양 끝 replicate padding)."""
+
+    def __init__(self, kernel_size: int):
+        super().__init__()
+        if kernel_size % 2 == 0:
+            kernel_size += 1  # 홀수로 강제 (대칭 padding)
+        self.kernel_size = kernel_size
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (B, L, F)
+        pad = (self.kernel_size - 1) // 2
+        front = x[:, 0:1, :].repeat(1, pad, 1)
+        end = x[:, -1:, :].repeat(1, pad, 1)
+        x = torch.cat([front, x, end], dim=1)            # (B, L+2pad, F)
+        x = x.permute(0, 2, 1)                            # (B, F, L+2pad)
+        x = nn.functional.avg_pool1d(x, kernel_size=self.kernel_size, stride=1)
+        return x.permute(0, 2, 1)                         # (B, L, F)
+
+
+class _SeriesDecomp(nn.Module):
+    def __init__(self, kernel_size: int):
+        super().__init__()
+        self.ma = _MovingAverage(kernel_size)
+
+    def forward(self, x: torch.Tensor):
+        trend = self.ma(x)
+        seasonal = x - trend
+        return seasonal, trend
+
+
+class DLinearRegressor(nn.Module):
+    """DLinear 기반 RUL 회귀 모델.
+
+    원 논문: 시계열을 trend + seasonal 로 분해, 각 component 에 채널별 linear 적용.
+    이 구현은 RUL (scalar) 예측을 위해 마지막에 채널 aggregation linear 를 추가한다.
+
+    구조:
+        x (B, F, L) or (B, L, F)
+          → SeriesDecomp(kernel) → seasonal, trend
+          → channel-individual Linear: L → 1 (각 채널마다)
+          → seasonal + trend (B, F)
+          → channel aggregation Linear: F → 1
+          → (B,)
+
+    파라미터:
+        input_dim   : feature 차원 (F)
+        seq_len     : 시퀀스 길이 (L). 모델 생성 시 고정.
+        kernel_size : moving average kernel (홀수, default 25)
+        individual  : 채널별 별도 linear 사용 여부 (True 권장)
+        input_format: "BFL" 또는 "BLF"
+    """
+
+    def __init__(self, input_dim: int, seq_len: int,
+                 kernel_size: int = 25, individual: bool = True,
+                 input_format: str = "BFL"):
+        super().__init__()
+        if input_format not in ("BFL", "BLF"):
+            raise ValueError(f"input_format must be 'BFL' or 'BLF', got '{input_format}'")
+        # seq_len 보다 큰 kernel 은 양 끝 padding 으로 흐려지므로 보정
+        effective_kernel = min(kernel_size, seq_len if seq_len % 2 == 1 else seq_len - 1)
+        if effective_kernel < 3:
+            effective_kernel = 3
+
+        self.input_dim = input_dim
+        self.seq_len = seq_len
+        self.input_format = input_format
+        self.individual = individual
+
+        self.decomp = _SeriesDecomp(effective_kernel)
+
+        if individual:
+            self.linear_seasonal = nn.ModuleList(
+                [nn.Linear(seq_len, 1) for _ in range(input_dim)]
+            )
+            self.linear_trend = nn.ModuleList(
+                [nn.Linear(seq_len, 1) for _ in range(input_dim)]
+            )
+        else:
+            self.linear_seasonal = nn.Linear(seq_len, 1)
+            self.linear_trend = nn.Linear(seq_len, 1)
+
+        # 채널 aggregation — 여기서만 cross-channel mixing 발생
+        self.channel_proj = nn.Linear(input_dim, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.dim() != 3:
+            raise RuntimeError(
+                f"DLinearRegressor expects 3D input, got dim={x.dim()} shape={tuple(x.shape)}"
+            )
+        if self.input_format == "BFL":
+            if x.shape[1] != self.input_dim:
+                raise RuntimeError(
+                    f"DLinearRegressor(BFL) expected F={self.input_dim} at dim=1, "
+                    f"got shape={tuple(x.shape)}"
+                )
+            x = x.transpose(1, 2)  # → (B, L, F)
+        else:  # "BLF"
+            if x.shape[2] != self.input_dim:
+                raise RuntimeError(
+                    f"DLinearRegressor(BLF) expected F={self.input_dim} at dim=2, "
+                    f"got shape={tuple(x.shape)}"
+                )
+        if x.shape[1] != self.seq_len:
+            raise RuntimeError(
+                f"DLinearRegressor expected L={self.seq_len} at dim=1, "
+                f"got shape={tuple(x.shape)}"
+            )
+
+        seasonal, trend = self.decomp(x)              # (B, L, F) each
+        seasonal = seasonal.permute(0, 2, 1)          # (B, F, L)
+        trend = trend.permute(0, 2, 1)                # (B, F, L)
+
+        if self.individual:
+            seasonal_outs = []
+            trend_outs = []
+            for i in range(self.input_dim):
+                seasonal_outs.append(self.linear_seasonal[i](seasonal[:, i, :]))  # (B, 1)
+                trend_outs.append(self.linear_trend[i](trend[:, i, :]))           # (B, 1)
+            seasonal_out = torch.stack(seasonal_outs, dim=1)  # (B, F, 1)
+            trend_out = torch.stack(trend_outs, dim=1)        # (B, F, 1)
+        else:
+            seasonal_out = self.linear_seasonal(seasonal)     # (B, F, 1)
+            trend_out = self.linear_trend(trend)              # (B, F, 1)
+
+        out = (seasonal_out + trend_out).squeeze(-1)          # (B, F)
+        out = self.channel_proj(out).view(-1)                 # (B,)
+        return out
+
+
+# ===========================================================================
+# iTransformer (Liu et al. 2024, ICLR, arXiv:2310.06625) — RUL 회귀 변형
+# "iTransformer: Inverted Transformers Are Effective for Time Series Forecasting"
+# 공식 구현: github.com/thuml/iTransformer
+#
+# 핵심 아이디어:
+#   - 전통적 Transformer: 토큰 = 시간 스텝, 토큰 수 = 시퀀스 길이 L
+#   - iTransformer  : 토큰 = 각 변수(센서)의 전체 시계열, 토큰 수 = 변수 수 F
+#   → cross-channel attention 직접 학습 → multivariate 시계열에 강함
+#
+# 본 구현이 원논문 대비 채택한 개선 (RUL 회귀 + XAI 정합):
+#   1. Pre-Norm 구조 (Xiong et al. 2020 — 학습 안정성)
+#   2. FFN 4× expansion (Vaswani et al. 2017 표준)
+#   3. Attention Pooling (per-variate projection 대신 RUL scalar 출력 + 변수 중요도)
+#   4. forward(x, return_aux=True) 로 attention map + var_importance 노출 (XAI)
+#   5. d_model = 128 (BiLSTM 표현력 비교 가능)
+#
+# 원논문 충실 — 의도적으로 추가하지 않은 것:
+#   - Positional Encoding: 원논문 "position embedding is no longer needed here"
+#     이유: 토큰이 변수의 전체 시계열을 함축 → 시간 정보가 토큰 안에 이미 존재
+#     FFN 이 temporal pattern 을 담당. PE 추가 ablation 은 학습 후 별도 비교.
+#   - Output ReLU: gradient saturation 방지 (RUL ≈ 0 영역 학습 유지).
+#   - Input LayerNorm: data_pipeline._scale_seq() 가 StandardScaler 적용 중
+#     (이중 정규화 회피).
+#   - Residual scaling: n_layers=2 얕은 모델에 부적합 (deep ≥ 12 layers 용 기법).
+#
+# 보류 (학습 후 검토):
+#   - RevIN (Reversible Instance Normalization): non-stationary 데이터에 효과적이나
+#     C-MAPSS 가 충분히 stationary 한지 데이터 분석 후 결정.
+# ===========================================================================
+
+class _ITransformerEncoderLayer(nn.Module):
+    """iTransformer encoder block — Pre-Norm + 변수 self-attention + FFN.
+
+    Pre-Norm 구조 (Xiong et al. 2020):
+        x = x + Attn(LN(x))
+        x = x + FFN(LN(x))
+    Post-Norm 대비 deep network 안정성 ↑, warmup 의존도 ↓.
+    """
+
+    def __init__(self, d_model: int, n_heads: int, d_ffn: int, dropout: float = 0.1):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.attn = nn.MultiheadAttention(
+            d_model, n_heads, dropout=dropout, batch_first=True
+        )
+        self.ffn = nn.Sequential(
+            nn.Linear(d_model, d_ffn),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_ffn, d_model),
+        )
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor, return_attn: bool = False):
+        # Pre-Norm attention
+        h = self.norm1(x)
+        attn_out, attn_weights = self.attn(
+            h, h, h, need_weights=return_attn, average_attn_weights=False
+        )
+        x = x + self.dropout(attn_out)
+
+        # Pre-Norm FFN
+        h = self.norm2(x)
+        x = x + self.dropout(self.ffn(h))
+
+        if return_attn:
+            return x, attn_weights
+        return x, None
+
+
+class _AttentionPool(nn.Module):
+    """변수 토큰을 softmax-weighted sum 으로 집계.
+
+    원논문의 per-variate Linear projection (D → pred_len) 대신, RUL scalar 출력을
+    위해 학습 가능한 변수 중요도 가중치를 사용. BiLSTMRegressor 의 AttentionPooling
+    과 일관된 패턴 + 변수 중요도가 XAI 출력으로 직접 활용 가능.
+    """
+
+    def __init__(self, d_model: int):
+        super().__init__()
+        self.score = nn.Linear(d_model, 1)
+
+    def forward(self, h: torch.Tensor):
+        # h: (B, F, D)
+        weights = torch.softmax(self.score(h), dim=1)   # (B, F, 1)
+        pooled = (h * weights).sum(dim=1)               # (B, D)
+        return pooled, weights
+
+
+class iTransformerRegressor(nn.Module):
+    """iTransformer 기반 RUL 회귀 모델.
+
+    구조:
+        x (B, F, L)                       ← 입력 (channel-first, 이미 정규화됨)
+        ↓ Variate Embedding: Linear(L → D) → (B, F, D)
+        ↓ Pre-Norm Encoder × n_layers      → (B, F, D)
+        ↓ Final LayerNorm                  → (B, F, D)
+        ↓ Attention Pooling (over F)       → (B, D), var_importance (B, F, 1)
+        ↓ Head: Linear(D → 1)              → (B,)
+
+    forward:
+        model(x)                  → tensor (B,)   ← 학습/평가용 (기존 trainer 호환)
+        model(x, return_aux=True) → (pred, aux)   ← XAI 용
+            aux = {
+                "var_importance": (B, F, 1) — softmax weights over variables,
+                "attn_maps":      list of (B, n_heads, F, F) — 각 layer attention,
+            }
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        seq_len: int,
+        d_model: int = 128,
+        n_heads: int = 4,
+        n_layers: int = 2,
+        d_ffn: Optional[int] = None,
+        dropout: float = 0.15,
+        input_format: str = "BFL",
+    ):
+        super().__init__()
+        if input_format not in ("BFL", "BLF"):
+            raise ValueError(f"input_format must be 'BFL' or 'BLF', got '{input_format}'")
+        if d_model % n_heads != 0:
+            raise ValueError(
+                f"d_model ({d_model}) must be divisible by n_heads ({n_heads})"
+            )
+
+        if d_ffn is None:
+            d_ffn = d_model * 4  # Transformer 표준 (Vaswani et al. 2017)
+
+        self.input_dim = input_dim
+        self.seq_len = seq_len
+        self.input_format = input_format
+
+        # 1) Variate embedding: 각 변수의 시계열(L) → 임베딩 차원(D)
+        #    iTransformer 원논문은 PE 미사용 — temporal 정보는 이 Linear weight 와 FFN 이 담당
+        self.embedding = nn.Linear(seq_len, d_model)
+        self.input_dropout = nn.Dropout(dropout)
+
+        # 2) Pre-Norm Encoder layers
+        self.layers = nn.ModuleList([
+            _ITransformerEncoderLayer(d_model, n_heads, d_ffn, dropout)
+            for _ in range(n_layers)
+        ])
+
+        # 3) Final LayerNorm (Pre-Norm 구조의 표준)
+        self.norm = nn.LayerNorm(d_model)
+
+        # 4) Attention Pooling — 변수 중요도 학습 + XAI
+        self.pool = _AttentionPool(d_model)
+
+        # 5) Output head: scalar RUL (ReLU 사용 안 함 — gradient saturation 방지)
+        self.head = nn.Linear(d_model, 1)
+
+    def _validate_shape(self, x: torch.Tensor) -> torch.Tensor:
+        if x.dim() != 3:
+            raise RuntimeError(
+                f"iTransformerRegressor expects 3D input, got dim={x.dim()} "
+                f"shape={tuple(x.shape)}"
+            )
+        if self.input_format == "BFL":
+            if x.shape[1] != self.input_dim:
+                raise RuntimeError(
+                    f"iTransformer(BFL) expected F={self.input_dim} at dim=1, "
+                    f"got {tuple(x.shape)}"
+                )
+        else:  # BLF
+            if x.shape[2] != self.input_dim:
+                raise RuntimeError(
+                    f"iTransformer(BLF) expected F={self.input_dim} at dim=2, "
+                    f"got {tuple(x.shape)}"
+                )
+            x = x.transpose(1, 2)  # → (B, F, L)
+        if x.shape[2] != self.seq_len:
+            raise RuntimeError(
+                f"iTransformer expected L={self.seq_len} at dim=2, "
+                f"got {tuple(x.shape)}"
+            )
+        return x
+
+    def forward(self, x: torch.Tensor, return_aux: bool = False):
+        x = self._validate_shape(x)         # (B, F, L)
+
+        # 1) Variate embedding (PE 없음 — 원논문 충실)
+        h = self.embedding(x)               # (B, F, D)
+        h = self.input_dropout(h)
+
+        # 2) Encoder layers (Pre-Norm)
+        attn_maps: List[torch.Tensor] = []
+        for layer in self.layers:
+            h, attn = layer(h, return_attn=return_aux)
+            if return_aux and attn is not None:
+                attn_maps.append(attn)
+
+        # 3) Final norm (Pre-Norm 표준)
+        h = self.norm(h)
+
+        # 4) Attention pooling — 변수 중요도 학습
+        pooled, var_importance = self.pool(h)  # (B, D), (B, F, 1)
+
+        # 5) Output
+        pred = self.head(pooled).view(-1)      # (B,)
+
+        if return_aux:
+            return pred, {
+                "var_importance": var_importance,  # (B, F, 1)
+                "attn_maps": attn_maps,            # list of (B, n_heads, F, F)
+            }
+        return pred
+
+
+# ===========================================================================
 # 모델 팩토리
 # ===========================================================================
 
-ARCHS = ("cnn_vibration", "cnn_tabular", "ae", "lstm")
+ARCHS = ("cnn_vibration", "cnn_tabular", "ae", "vae", "lstm", "dlinear", "itransformer")
 
 
 def build_model(arch: str, **kwargs) -> nn.Module:
     """문자열 키 기반 모델 팩토리.
 
     arch:
-      "cnn_vibration"  : WDCNN1D       (CWRU 등 진동 신호)
-      "cnn_tabular"    : TabularCNN1D  (AI4I 등 짧은 테이블)
+      "cnn_vibration"  : WDCNN1D                (CWRU 등 진동 신호)
+      "cnn_tabular"    : TabularCNN1D           (AI4I 등 짧은 테이블)
       "ae"             : DenoisingAE
-      "lstm"           : BiLSTMRegressor
+      "vae"            : VariationalAutoencoder (이상 탐지, ELBO 기반)
+      "lstm"           : BiLSTMRegressor        (RUL 회귀, 시계열)
+      "dlinear"        : DLinearRegressor       (RUL 회귀, lightweight baseline)
+      "itransformer"   : iTransformerRegressor  (RUL 회귀, cross-channel attention)
 
     오타 방어: 알려지지 않은 arch는 difflib로 가까운 후보를 추천한다.
-    예) "LSTM" → "Did you mean: lstm?"
     """
     if arch not in ARCHS:
         suggestions = difflib.get_close_matches(arch, ARCHS, n=2, cutoff=0.4)
@@ -559,5 +1019,11 @@ def build_model(arch: str, **kwargs) -> nn.Module:
         return TabularCNN1D(**kwargs)
     if arch == "ae":
         return DenoisingAE(**kwargs)
-    # arch == "lstm"
-    return BiLSTMRegressor(**kwargs)
+    if arch == "vae":
+        return VariationalAutoencoder(**kwargs)
+    if arch == "lstm":
+        return BiLSTMRegressor(**kwargs)
+    if arch == "dlinear":
+        return DLinearRegressor(**kwargs)
+    # arch == "itransformer"
+    return iTransformerRegressor(**kwargs)

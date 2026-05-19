@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 import warnings
+from functools import partial
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -695,11 +696,33 @@ def load_ncmapss_lstm(file_name: str = "N-CMAPSS_DS01-005.h5",
 # 데이터셋 등록부 - main에서 일괄 호출용
 # ---------------------------------------------------------------------------
 LOADERS = {
-    "ai4i_cnn":      load_ai4i_cnn,
-    "ai4i_ae":       load_ai4i_ae,        # legacy 비교용 (PIPELINE에서는 제외)
-    "ai4i_gbdt":     load_ai4i_gbdt,
-    "cwru_cnn":      load_cwru_cnn,
-    "hydraulic_ae":  load_hydraulic_ae,
-    "cmapss_lstm":   load_cmapss_lstm,
-    "ncmapss_lstm":  load_ncmapss_lstm,
+    "ai4i_cnn":         load_ai4i_cnn,
+    "ai4i_cnn_recall":  load_ai4i_cnn,     # 동일 데이터, recall 강화 cfg variant
+    "ai4i_ae":          load_ai4i_ae,      # legacy 비교용 (PIPELINE에서는 제외)
+    "ai4i_gbdt":        load_ai4i_gbdt,
+    "cwru_cnn":        load_cwru_cnn,
+    "hydraulic_ae":    load_hydraulic_ae,
+    "hydraulic_vae":   load_hydraulic_ae,  # 동일 정상-only 데이터, VAE 변형
+    # ===== C-MAPSS: FD001 기본 (cmapss_lstm 은 기존 호환 키, FD001 과 동일) =====
+    "cmapss_lstm":           load_cmapss_lstm,                              # FD001
+    "cmapss_lstm_fd001":     partial(load_cmapss_lstm, subset="FD001"),
+    "cmapss_lstm_fd002":     partial(load_cmapss_lstm, subset="FD002"),
+    "cmapss_lstm_fd003":     partial(load_cmapss_lstm, subset="FD003"),
+    "cmapss_lstm_fd004":     partial(load_cmapss_lstm, subset="FD004"),
+    # DLinear 비교 baseline (동일 데이터셋, 다른 모델)
+    "cmapss_dlinear":        load_cmapss_lstm,                              # FD001
+    "cmapss_dlinear_fd001":  partial(load_cmapss_lstm, subset="FD001"),
+    "cmapss_dlinear_fd002":  partial(load_cmapss_lstm, subset="FD002"),
+    "cmapss_dlinear_fd003":  partial(load_cmapss_lstm, subset="FD003"),
+    "cmapss_dlinear_fd004":  partial(load_cmapss_lstm, subset="FD004"),
+    # iTransformer 비교 baseline (동일 데이터셋, cross-channel attention 모델)
+    "cmapss_itransformer":        load_cmapss_lstm,                              # FD001
+    "cmapss_itransformer_fd001":  partial(load_cmapss_lstm, subset="FD001"),
+    "cmapss_itransformer_fd002":  partial(load_cmapss_lstm, subset="FD002"),
+    "cmapss_itransformer_fd003":  partial(load_cmapss_lstm, subset="FD003"),
+    "cmapss_itransformer_fd004":  partial(load_cmapss_lstm, subset="FD004"),
+    # ===== N-CMAPSS =====
+    "ncmapss_lstm":         load_ncmapss_lstm,
+    "ncmapss_dlinear":      load_ncmapss_lstm,
+    "ncmapss_itransformer": load_ncmapss_lstm,
 }

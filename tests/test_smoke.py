@@ -2,7 +2,7 @@
 Smoke tests — checkpoint-free / API-key-free.
 
 Coverage:
-  1. resolve_execution_mode  (4 env flag 조합)
+  1. Dash app boot           (multi-page 6개 등록 확인)
   2. ToolDispatcher.dispatch (5 tools + unknown tool)
   3. AnalyzeService.run      (lite mode scalar: 정상 / 검증 오류)
   4. LlmService.generate     (GROQ_API_KEY 없음 → fallback)
@@ -13,12 +13,6 @@ Coverage:
 from __future__ import annotations
 
 import os
-
-# matplotlib 을 headless 모드로 고정 — 반드시 matplotlib 이 첫 import 되기 전에 설정.
-# plot_service 가 matplotlib.pyplot 을 import 하므로, 하위 import 이전에 설정되어야 한다.
-os.environ.setdefault("MPLBACKEND", "Agg")
-
-import importlib
 import sys
 from pathlib import Path
 from typing import List
@@ -37,36 +31,32 @@ os.environ.pop("ENABLE_LLM_STREAM", None)
 
 
 # ===========================================================================
-# 1) resolve_execution_mode
+# 1) Dash app boot
 # ===========================================================================
 
-class TestResolveExecutionMode:
-    """gradio_app.resolve_execution_mode 4가지 env 조합 검증."""
+class TestDashAppBoot:
+    """app.py 가 정상 부팅하고 6개 페이지가 등록되는지 확인."""
 
-    @pytest.fixture(autouse=True)
-    def _import_app(self):
-        self.app = importlib.import_module("gradio_app")
+    def test_app_imports(self):
+        import app  # noqa: F401
+        assert hasattr(app, "app")
+        assert hasattr(app, "server")  # WSGI entry
 
-    def test_default_non_stream(self):
-        mode, reason = self.app.resolve_execution_mode(stream_env=False, tools_env=False)
-        assert mode == self.app.ExecutionMode.NON_STREAM
-        assert reason == "default_non_stream"
+    def test_six_pages_registered(self):
+        import app  # noqa: F401
+        import dash
+        pages = list(dash.page_registry.keys())
+        assert len(pages) == 6, f"expected 6 pages, got {len(pages)}: {pages}"
 
-    def test_stream_env_enabled(self):
-        mode, reason = self.app.resolve_execution_mode(stream_env=True, tools_env=False)
-        assert mode == self.app.ExecutionMode.STREAM
-        assert reason == "stream_env_enabled"
-
-    def test_tools_overrides_stream(self):
-        """ENABLE_LLM_TOOLS=1 은 ENABLE_LLM_STREAM=1 보다 우선순위가 높다."""
-        mode, reason = self.app.resolve_execution_mode(stream_env=True, tools_env=True)
-        assert mode == self.app.ExecutionMode.NON_STREAM
-        assert reason == "tools_enabled_disables_stream"
-
-    def test_tools_only_non_stream(self):
-        mode, reason = self.app.resolve_execution_mode(stream_env=False, tools_env=True)
-        assert mode == self.app.ExecutionMode.NON_STREAM
-        assert reason == "tools_enabled_disables_stream"
+    def test_expected_page_paths(self):
+        import app  # noqa: F401
+        import dash
+        paths = {p["path"] for p in dash.page_registry.values()}
+        # 핵심 경로 4개 확인 (Analysis '/', Status, Reports 는 구현됨)
+        assert "/" in paths
+        assert "/status" in paths
+        assert "/reports" in paths
+        assert "/lstm" in paths
 
 
 # ===========================================================================
