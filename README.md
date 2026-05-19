@@ -1,6 +1,6 @@
 # OmniPdM — All-in-One Predictive Maintenance System with LLM Analysis
 
-> 이전 코드네임 **HybridPdM**. 저장소 디렉터리명(`hybridpdm_gradio/`)은 히스토리 보존을 위해 유지하되, 제품/문서 표기는 **OmniPdM** 으로 통합합니다.
+> 이전 코드네임 **HybridPdM**. 2026-05-19 부로 GitHub 저장소(`OmniPdM-LLM`) + 로컬 디렉터리(`OmniPdM/`) 모두 새 이름으로 통합. 제품/문서 표기는 **OmniPdM** 으로 통일.
 > - 의미: "Omni-" = 모든 것/전체. 다종 산업 설비(Milling / Bearing / Hydraulic / Turbofan 등) 센서 데이터를 단일 플랫폼으로 통합, 예측~LLM 설명까지 풀스택 PdM.
 > - 로고: [assets/omnipdm_logo.png](assets/omnipdm_logo.png) — Dark Gray + Neon Green, ∞(인피니티) 회로 라인.
 > - 브랜드/네이밍 정당성은 [PRD.md](PRD.md) §0 참고.
@@ -60,7 +60,7 @@ PlotService / ReportService ← Plotly 차트 + Markdown 보고서
 ## 프로젝트 구조
 
 ```text
-hybridpdm_gradio/
+OmniPdM/
 ├── app.py                              # Dash multi-page 진입점
 ├── requirements.txt
 ├── .env.example
@@ -136,8 +136,8 @@ hybridpdm_gradio/
 요구사항: Python 3.10+
 
 ```bash
-git clone <repo-url>
-cd hybridpdm_gradio
+git clone https://github.com/yoosehyeon/OmniPdM-LLM.git OmniPdM
+cd OmniPdM
 
 python -m venv .venv
 # Windows

@@ -31,7 +31,9 @@
 | 한글 표기 | 옴니 피디엠 |
 | 풀네임 | OmniPdM — All-in-One PdM System |
 | 학술 인용 시 | OmniPdM (formerly HybridPdM) — 첫 등장에만 병기 |
-| 코드 / repo 디렉터리 | 당분간 `hybridpdm_gradio/` 유지 (히스토리 보존) — 신규 모듈만 `omnipdm` 네임스페이스 검토 |
+| GitHub 저장소 | `OmniPdM-LLM` (2026-05-19 `hybridpdm-LLM` → 이 이름으로 리네이밍, GitHub redirect 자동) |
+| 로컬 디렉터리 | `OmniPdM/` (2026-05-19 `hybridpdm_gradio` 에서 리네이밍) |
+| Python 패키지 네임스페이스 | `models_core`, `services`, `scripts` 그대로 유지 — 디렉터리/리포 이름과 무관 |
 
 ---
 
