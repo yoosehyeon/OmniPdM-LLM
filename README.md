@@ -1,45 +1,31 @@
----
-title: HybridPdM
-emoji: 🔧
-colorFrom: blue
-colorTo: green
-sdk: gradio
-sdk_version: 6.12.0
-app_file: app.py
-pinned: false
-python_version: "3.10"
----
+# OmniPdM — All-in-One Predictive Maintenance System with LLM Analysis
 
-# HybridPdM — Hybrid Predictive Maintenance with LLM Analysis
+> 이전 코드네임 **HybridPdM**. 저장소 디렉터리명(`hybridpdm_gradio/`)은 히스토리 보존을 위해 유지하되, 제품/문서 표기는 **OmniPdM** 으로 통합합니다.
+> - 의미: "Omni-" = 모든 것/전체. 다종 산업 설비(Milling / Bearing / Hydraulic / Turbofan 등) 센서 데이터를 단일 플랫폼으로 통합, 예측~LLM 설명까지 풀스택 PdM.
+> - 로고: [assets/omnipdm_logo.png](assets/omnipdm_logo.png) — Dark Gray + Neon Green, ∞(인피니티) 회로 라인.
+> - 브랜드/네이밍 정당성은 [PRD.md](PRD.md) §0 참고.
 
-> 본 저장소는 Hugging Face Spaces (Gradio SDK) 배포에 맞춰 구성되어 있습니다.
-> Space 진입 파일: [app.py](app.py) (내부적으로 `gradio_app.py` 의 `demo` 재노출).
-> 로컬 개발 시에는 `python gradio_app.py` 또는 `python app.py` 모두 사용 가능합니다.
+산업설비 예지보전(Predictive Maintenance)을 위한 하이브리드 파이프라인.
+정형 센서 데이터(스칼라 / 시계열)를 입력받아 딥러닝 기반 고장·이상·RUL 예측을 수행하고,
+위험도 평가 + 설명(Feature Importance / Attention) + **LLM 한국어 분석 코멘트**까지 단일 흐름으로 제공합니다.
 
-산업설비 예지보전(Predictive Maintenance)을 위한 하이브리드 파이프라인입니다.
-정형 센서 데이터(스칼라·시계열)를 입력받아 딥러닝 기반 고장 예측을 수행하고,
-위험도 평가·설명(Feature Importance / Attention)을 종합해 **LLM이 현장 정비 담당자용 한국어 분석 코멘트를 생성**합니다.
-
-Gradio 기반 UI로 즉시 결과를 확인할 수 있습니다.
+UI는 **Dash multi-page**, 실험 추적은 **MLflow**, 학습 진입점은 `scripts/training/main.py`로 분리되어 있습니다.
 
 ---
 
 ## 주요 기능
 
 - **스칼라 입력 분석**: 단일 시점 센서 벡터 → 고장 확률 + 위험 등급 + 설명 + LLM 코멘트
-- **시계열(LSTM) 분석**: 다변량 시계열 → RUL/고장 예측 + Attention 설명 + LLM 코멘트
-- **Risk Scoring**: 예측 확률과 도메인 규칙을 결합한 위험도 산정 (`weighted` / `rule-based`)
-- **LLM 분석 코멘트**: 상태 요약 / 의심 원인 / 권장 조치 3섹션으로 구성된 한국어 리포트
-- **Guardrail**: 금지 표현 필터링 및 출력 구조 검증, 실패 시 재작성 / 안전 fallback
-- **Evaluation**: 출력 구조 점검 및 (옵션) LLM-as-Judge 기반 사실성 검증
-- **Report**: Markdown 리포트 자동 생성 및 저장
-
-### LLM 파이프라인 고도화 (본 브랜치 `update`)
-
-| 단계 | 내용 |
-|-----|-----|
-| P1 | 프롬프트 파일 로더 / Few-shot 예시 3종 / 위험등급별 temperature / `max_tokens` 환경변수화 |
-| P2 | Chain-of-Thought 내부 추론 지시 / 데이터셋별 domain context 분기 / LLM-as-Judge (opt-in) |
+- **시계열 분석 (BiLSTM / DLinear / iTransformer)**: 다변량 시계열 → RUL 예측 + Attention/Temporal 설명
+- **이상 탐지 (Denoising AE)**: 정상 데이터 기반 재구성 오차로 이상 점수 산출
+- **Risk Scoring**: `weighted` / `noisy_or` / `max` 3가지 융합 + 동적 가중치
+- **LLM 분석 코멘트**: 상태 요약 / 의심 원인 / 권장 조치 3섹션 한국어 리포트 (Groq Llama 3.3 70B)
+- **Guardrail**: 금지 표현 정규식 치환 + 3섹션 구조 검증 + 안전 fallback
+- **Evaluation**: 구조 점수 + (옵션) LLM-as-Judge
+- **학술 metric 보강**: NASA PHM Score (RUL asymmetric), Confusion Matrix, PR-AUC, ROC-AUC, False Alarm Rate
+- **Multi-seed 재현성**: `--seeds 42 43 44` CLI 지원, MLflow 태그로 자동 비교
+- **Report**: Markdown + JSON 보고서 자동 저장 / 브라우저 조회
+- **MLflow 실험 추적**: 학습 파라미터 + 평가 메트릭 + 모델 family / FD subset / seed 태그 자동 기록
 
 ---
 
@@ -48,22 +34,26 @@ Gradio 기반 UI로 즉시 결과를 확인할 수 있습니다.
 ```text
 [User Input]
      ↓
-InputValidationService   ← 범위/타입 검증
+InputValidationService     ← 범위 / 타입 검증
      ↓
-PdmService               ← 딥러닝 추론 (scalar / LSTM)
+PdmService                 ← 모델 추론 (CNN / GBDT / AE / BiLSTM / DLinear / iTransformer)
      ↓
-RiskService              ← 위험도 점수 산정
+RiskService                ← 위험도 융합 (weighted / noisy_or / max)
      ↓
-ExplainService           ← Feature Importance / Attention 추출
+ExplainService             ← Feature Importance / Attention 추출
      ↓
-LlmService               ← 시스템 프롬프트 + Few-shot + CoT + domain_context 로 코멘트 생성
+LlmService                 ← System + Few-shot + CoT + Domain context
      ↓
-GuardrailService         ← 금지 표현/구조 검증, 재작성 또는 fallback
+GuardrailService           ← 금지 표현 치환 + 구조 검증 + fallback
      ↓
-EvaluationService        ← 구조 점수 + (옵션) LLM-as-Judge
+EvaluationService          ← 구조 점수 + (옵션) LLM-as-Judge
      ↓
-PlotService / ReportService  ← 시각화 + Markdown 리포트
+PlotService / ReportService ← Plotly 차트 + Markdown 보고서
+     ↓
+[Dash UI (6 pages)]
 ```
+
+서비스 계층(`services/`)은 UI 의존성이 없어 Dash / FastAPI / CLI 어디에서도 재사용 가능합니다.
 
 ---
 
@@ -71,56 +61,83 @@ PlotService / ReportService  ← 시각화 + Markdown 리포트
 
 ```text
 hybridpdm_gradio/
-├── gradio_app.py              # Gradio UI 진입점
-├── run_ngrok.py               # ngrok 터널링 실행 스크립트
+├── app.py                              # Dash multi-page 진입점
 ├── requirements.txt
-├── .env.example               # 환경변수 템플릿
+├── .env.example
+├── PRD.md
 │
-├── services/                  # 도메인 서비스 계층
-│   ├── analyze_service.py     # 전체 파이프라인 오케스트레이션
+├── pages/                              # Dash 6 페이지
+│   ├── _helpers.py                     # 공유 헬퍼 (싱글톤, 샘플 데이터)
+│   ├── analysis.py                     # Scalar 분석 (구현 완료)
+│   ├── lstm_analysis.py                # Sequence 분석 (placeholder)
+│   ├── diagnostics.py                  # 파이프라인 진단 (placeholder)
+│   ├── risk_simulator.py               # 위험도 슬라이더 (placeholder)
+│   ├── model_status.py                 # 체크포인트 상태 (구현 완료)
+│   └── report.py                       # 보고서 브라우저 (구현 완료)
+│
+├── services/                           # 도메인 서비스 계층 (UI 무관)
+│   ├── analyze_service.py              # 9 단계 오케스트레이션
 │   ├── input_validation_service.py
 │   ├── pdm_service.py
 │   ├── risk_service.py
 │   ├── explain_service.py
-│   ├── llm_service.py         # OpenAI 호출 + Few-shot + Judge
+│   ├── llm_service.py                  # Groq + Streaming + Function Calling
+│   ├── llm_tools.py                    # 5 tools + ToolDispatcher
 │   ├── guardrail_service.py
 │   ├── evaluation_service.py
-│   ├── plot_service.py
+│   ├── plot_service.py                 # Plotly Figure 반환
 │   ├── report_service.py
-│   └── schemas.py             # 공용 dataclass
+│   └── schemas.py
 │
-├── models_core/               # 딥러닝 모델·학습 코드
-│   ├── models.py              # CNN / LSTM 정의
-│   ├── train.py
-│   ├── evaluate.py
-│   ├── data_pipeline.py
-│   ├── risk_score.py
-│   ├── explain.py
-│   └── config.py
+├── models_core/                        # 모델 / 데이터 런타임
+│   ├── config.py                       # LSTM_CFG, DLINEAR_CFG, ITRANSFORMER_CFG, NCMAPSS_LSTM_CFG
+│   ├── models.py                       # WDCNN1D / TabularCNN1D / AE / BiLSTM / DLinear / iTransformer
+│   ├── data_pipeline.py                # 6+ dataset_key + FD001~004 별칭 loaders
+│   ├── risk_score.py                   # weighted / noisy_or / max 융합
+│   ├── _archive/                       # 미사용 코드 보관 (Captum 등)
+│   └── artifacts/
+│       ├── checkpoints/                # 학습된 가중치 (gitignored)
+│       └── reports/                    # 자동 저장 보고서 (gitignored)
 │
-├── prompts/                   # LLM 프롬프트 자원
-│   ├── system_pdm_assistant.txt
-│   └── user_context_template.json
+├── scripts/
+│   ├── run_ngrok.py                    # (선택) ngrok 외부 공유
+│   ├── export_checkpoint_meta.py
+│   ├── upload_checkpoints_to_hf.py
+│   └── training/                       # 학습 / 평가 / 분석 (런타임 분리)
+│       ├── main.py                     # 학습 진입점 (MLflow + multi-seed)
+│       ├── train.py                    # TRAINERS, EarlyStopping, set_seed_suffix
+│       ├── evaluate.py                 # EVALUATORS + NASA Score + Confusion + PR-AUC
+│       ├── reeval.py                   # 학습 없이 기존 체크포인트 재평가
+│       ├── analyze_results.py          # MLflow 결과 mean±std + 3-way 비교
+│       ├── compute_efficiency.py       # latency / memory / param 벤치마크
+│       └── mlflow_logger.py            # MLflow wrapper
+│
+├── prompts/
+│   └── system_pdm_assistant.txt
+│
+├── notebooks/
+│   ├── sensor_correlation_analysis.ipynb   # iTransformer 정당화 분석
+│   └── multiseed_3way_comparison.ipynb     # 3-way 모델 비교 시각화 (7개 차트)
 │
 └── tests/
-    ├── test_smoke.py
+    ├── test_smoke.py                   # Dash boot + Services smoke
     ├── test_validation_step.py
     ├── test_pdm_lstm_step.py
     ├── test_llm_stream_step.py
     └── test_analyze_lstm_step.py
 ```
 
-> 데이터셋 원본(`models_core/dataset/`), 학습된 체크포인트(`artifacts/checkpoints/`), 생성된 리포트(`artifacts/reports/`), 런타임 로그(`logs/`)는 저장소에 포함되지 않습니다. 아래 [데이터셋](#데이터셋) 섹션 참고.
+데이터셋 원본, 체크포인트, 보고서, 로그, MLflow DB는 저장소에 포함되지 않습니다.
 
 ---
 
 ## 설치
 
-요구사항: Python 3.10+ (권장)
+요구사항: Python 3.10+
 
 ```bash
-git clone https://github.com/yoosehyeon/hybridpdm-LLM.git
-cd hybridpdm-LLM
+git clone <repo-url>
+cd hybridpdm_gradio
 
 python -m venv .venv
 # Windows
@@ -133,137 +150,238 @@ pip install -r requirements.txt
 
 ### 환경변수
 
-`.env.example` 을 `.env` 로 복사 후 값을 채웁니다.
+`.env.example` → `.env` 복사 후 값 입력.
 
-```bash
-cp .env.example .env
-```
-
-| 변수 | 설명 | 기본값 |
-|------|------|--------|
-| `GROQ_API_KEY` | Groq Cloud 에서 발급한 API 키 (미설정 시 LLM 호출 없이 fallback 텍스트 사용) | - |
-| `GROQ_MODEL` | 사용할 모델 | `llama-3.3-70b-versatile` |
-| `GROQ_TEMPERATURE` | 기본 temperature (위험등급별로 동적 조정됨) | `0.2` |
-| `GROQ_MAX_TOKENS` | 응답 최대 토큰 | `800` |
-| `GROQ_BASE_URL` | OpenAI 호환 endpoint (커스텀 프록시용) | `https://api.groq.com/openai/v1` |
-| `PROMPT_DIR` | 시스템 프롬프트 디렉터리 | `prompts` |
-| `ENABLE_LLM_JUDGE` | `1` 설정 시 LLM-as-Judge 활성화 (추가 API 호출) | `0` |
-| `ENABLE_LLM_STREAM` | `1` 설정 시 UI 계층에서 `generate_stream()` 사용 (서비스 메서드는 값 무관하게 항상 제공). `ENABLE_LLM_TOOLS=1` 과 동시 설정 시 tools 쪽이 우선하여 비-스트리밍 경로가 선택됨 — 결정 결과는 부팅 시 `[HybridPdM] execution mode resolved: ...` 로그로 확인 가능 | `0` |
-| `ENABLE_LLM_TOOLS` | `1` 설정 시 LLM Function Calling 활성화 (`services/llm_tools.py` 의 5 개 tool: `get_feature_schema` / `get_risk_threshold_info` / `get_recent_analysis_history` / `perturb_input_and_predict` / `compute_custom_risk_score`). 체크포인트를 실제로 다시 돌리므로 latency 가 늘 수 있음 | `0` |
-| `CHECKPOINT_REPO` | 런타임에 체크포인트를 pull 할 HF Model Hub repo. 로컬 `models_core/artifacts/checkpoints/` 에 동일 stem 이 있으면 우선 사용 | `yusehyeon/hybridpdm-checkpoints` |
-
-> LLM 프로바이더로 **Groq (Llama 3.3 70B Versatile)** 를 사용합니다. OpenAI 호환 endpoint 를 통해 `openai` SDK 그대로 호출하며, 무료 티어 한도(30 RPM / ~14.4K RPD) 는 본 프로젝트의 시연 수요를 충분히 감당합니다. API 키는 [Groq Cloud Console](https://console.groq.com/keys) 에서 발급.
+| 변수 | 기본값 | 설명 |
+|------|--------|------|
+| `GROQ_API_KEY` | - | Groq Cloud 발급. 미설정 시 LLM 코멘트는 rule-based fallback |
+| `GROQ_MODEL` | `llama-3.3-70b-versatile` | 사용할 모델 |
+| `GROQ_TEMPERATURE` | `0.2` | 기본 temperature (위험등급별 동적 조정됨) |
+| `GROQ_MAX_TOKENS` | `800` | 응답 최대 토큰 |
+| `GROQ_BASE_URL` | `https://api.groq.com/openai/v1` | OpenAI 호환 endpoint |
+| `PROMPT_DIR` | `prompts` | 시스템 프롬프트 디렉터리 |
+| `ENABLE_LLM_JUDGE` | `0` | `1` 설정 시 LLM-as-Judge 활성화 |
+| `ENABLE_LLM_STREAM` | `0` | `1` 설정 시 토큰 스트리밍 사용 |
+| `ENABLE_LLM_TOOLS` | `0` | `1` 설정 시 Function Calling 5 tools 활성화 |
+| `CHECKPOINT_REPO` | `yusehyeon/hybridpdm-checkpoints` | HF Hub fallback (로컬 우선) |
+| `DASH_HOST` | `0.0.0.0` | Dash 서버 호스트 |
+| `DASH_PORT` | `8050` | Dash 서버 포트 |
+| `DASH_DEBUG` | `false` | Dash debug 모드 |
+| `DISABLE_MLFLOW` | `0` | `1` 설정 시 MLflow 추적 비활성화 |
+| `MLFLOW_TRACKING_URI` | `sqlite:///mlflow.db` | MLflow 백엔드 (PostgreSQL 가능) |
 
 ---
 
 ## 실행
 
-### Gradio UI
+### Dash UI
 
 ```bash
-python gradio_app.py
+python app.py
 ```
 
-기본적으로 `http://localhost:7860` 에서 UI 가 열립니다.
+기본 접속: `http://localhost:8050`
 
-### ngrok 터널 (외부 접속)
+페이지:
+- `/` — Analysis (Scalar 입력, 구현 완료)
+- `/lstm` — LSTM Analysis (구현 예정)
+- `/diagnostics` — Diagnostics (구현 예정)
+- `/risk` — Risk Simulator (구현 예정)
+- `/status` — Model Status (구현 완료)
+- `/reports` — Report Browser (구현 완료)
+
+### 학습
 
 ```bash
-python run_ngrok.py
+# 전체 데이터셋 1 epoch smoke
+python -m scripts.training.main --smoke --skip-explain
+
+# 특정 데이터셋만 본 학습 (default seed=42)
+python -m scripts.training.main --datasets ai4i_cnn cmapss_lstm
+
+# C-MAPSS FD별 비교 (BiLSTM)
+python -m scripts.training.main \
+    --datasets cmapss_lstm_fd001 cmapss_lstm_fd002 cmapss_lstm_fd003 cmapss_lstm_fd004 \
+    --skip-explain
+
+# Multi-seed 재현성 학습 (seed 42, 43, 44)
+python -m scripts.training.main \
+    --datasets cmapss_lstm cmapss_dlinear cmapss_itransformer \
+    --seeds 42 43 44 \
+    --skip-explain
+
+# 모든 데이터셋 + 모든 모델 (장시간)
+python -m scripts.training.main
 ```
 
----
+### 재평가 (학습 없이 새 metric만)
 
-## Hugging Face Spaces 배포
+evaluate.py에 새 metric (NASA Score 등)을 추가한 후 기존 체크포인트로 재계산:
 
-본 프로젝트는 **Hugging Face Spaces (Gradio SDK, free CPU basic)** 를 1순위 시연 URL 로 사용합니다.
+```bash
+python -m scripts.training.reeval
+# 또는 특정 데이터셋만
+python -m scripts.training.reeval --datasets cmapss_lstm cmapss_dlinear
+```
 
-### 1. Space 생성
+별도 MLflow experiment `hybridpdm_reeval` 에 기록 (기존 학습 run 보존).
 
-1. [huggingface.co/new-space](https://huggingface.co/new-space) 에서 새 Space 생성
-   - SDK: **Gradio**
-   - Hardware: **CPU basic (free)**
-2. 생성된 Space 저장소 clone 후 본 저장소 내용을 push (또는 기존 저장소를 Space remote 로 추가)
+### 결과 분석 (Multi-seed mean±std + 3-way 비교)
 
-### 2. Secrets 등록
+```bash
+python -m scripts.training.analyze_results
+# CSV 저장
+python -m scripts.training.analyze_results --csv
+# 다른 metric 기준
+python -m scripts.training.analyze_results --metric nasa_score_sum
+```
 
-Space 의 `Settings → Variables and secrets → New secret` 메뉴에서 다음을 등록합니다.
-(값이 없으면 LLM 호출은 fallback 경로로 동작합니다.)
+출력:
+- 모든 run 표
+- `model × subset` mean±std (n=seed 개수)
+- BiLSTM 기준 격차 % (DLinear / iTransformer)
+- 자동 인사이트 (best/worst FD, variance 큰 subset)
+- JSON 저장
 
-| Key | 필수 | 설명 |
-|-----|------|------|
-| `GROQ_API_KEY` | 권장 | [Groq Cloud Console](https://console.groq.com/keys) 에서 발급 (무료). 미설정 시 LLM 코멘트는 규칙 기반 fallback 으로 대체됩니다 |
-| `GROQ_MODEL` | 선택 | 미설정 시 `llama-3.3-70b-versatile` |
-| `ENABLE_LLM_JUDGE` | 선택 | `1` 로 설정 시 Judge 파이프라인 활성화 (API 호출 증가) |
-| `ENABLE_LLM_STREAM` | 선택 | `1` 로 설정 시 UI 스트리밍 경로 사용 (P3-① Option B 적용 이후) |
+### Compute Efficiency 벤치마크 (latency / memory / params)
 
-### 3. 체크포인트 전략
+```bash
+python -m scripts.training.compute_efficiency
+# 재현성 우선 (단일 스레드)
+python -m scripts.training.compute_efficiency --single-thread
+# GPU
+python -m scripts.training.compute_efficiency --device cuda
+```
 
-Space 저장소는 binary 를 포함할 수 없으므로 체크포인트는 **별도 HF Model Hub repo** 에서 런타임에 pull 합니다.
+3개 RUL 모델(BiLSTM / DLinear / iTransformer)을 C-MAPSS (F=14) + N-CMAPSS (F=43) 차원에서 측정. MLflow `hybridpdm_efficiency` experiment 기록.
 
-- 기본 repo: [`yusehyeon/hybridpdm-checkpoints`](https://huggingface.co/yusehyeon/hybridpdm-checkpoints) (public, model type)
-- 포함 파일: 6개 모델의 `*.pt` / `*.pkl` 가중치 + `*_meta.json` (feature_names / feature_dim / task 등 데이터셋 의존성 제거용 메타) + 학습 history JSON
-- 로드 순서: 로컬 `models_core/artifacts/checkpoints/<stem>*.{pt,pkl}` → 없으면 `huggingface_hub.hf_hub_download(CHECKPOINT_REPO, …)` fallback (캐시: `~/.cache/huggingface/hub/`)
-- 다른 repo 로 교체하려면 Space Secret 에 `CHECKPOINT_REPO=<org>/<repo>` 추가
-- 업로드/재생성 스크립트: [scripts/export_checkpoint_meta.py](scripts/export_checkpoint_meta.py) (데이터셋 있는 개발 환경에서 meta.json 추출) + [scripts/upload_checkpoints_to_hf.py](scripts/upload_checkpoints_to_hf.py) (repo 생성 + 업로드)
-- 결과: `Analysis` / `LSTM Analysis` / `Diagnostics` / `Model Status` 4 탭 모두 Space 에서 정상 동작 (첫 추론 시 cold-pull 지연 수 초 발생)
+### MLflow UI
 
-### 4. 진입 파일
+```bash
+mlflow ui
+```
 
-- HF Spaces 는 `app.py` 의 `demo` 객체를 자동으로 launch 합니다.
-- 본 저장소 `app.py` 는 `from gradio_app import demo` 로 재노출하는 얇은 래퍼이므로, 기존 `gradio_app.py` 엔트리 구조가 그대로 유지됩니다.
+기본 접속: `http://localhost:5000`. 모든 학습 run 의 파라미터 / 메트릭 / 태그 비교 가능.
 
-### 5. 배포 백업
+### ngrok 외부 공유 (선택)
 
-Space 가 불안정하거나 빌드 오류가 장기화될 경우 백업으로 **ngrok paid (고정 도메인)** 을 사용할 수 있습니다. `run_ngrok.py` 참조.
+```bash
+python scripts/run_ngrok.py
+```
 
 ---
 
 ## 데이터셋
 
-본 프로젝트는 아래 공개 데이터셋을 사용합니다. 저장소에는 포함되어 있지 않으므로 직접 다운로드하여 `models_core/dataset/` 하위에 배치해야 합니다.
-
-> **배포 환경 (HF Space) 에서는 데이터셋이 필요 없습니다.** 체크포인트와 함께 업로드된 `*_meta.json` 이 feature 정의를 대신 제공합니다. 데이터셋은 **재학습 / meta.json 재생성 시에만** 필요합니다.
+본 프로젝트는 아래 공개 데이터셋을 사용합니다. 저장소에 포함되어 있지 않으므로 직접 다운로드 후 `models_core/dataset/` 하위 배치.
 
 | 데이터셋 | 설명 | 다운로드 |
 |---------|------|---------|
-| **NASA C-MAPSS** | Turbofan Engine Degradation Simulation (RUL 예측) | [NASA PCoE Data Repository](https://www.nasa.gov/intelligent-systems-division/discovery-and-systems-health/pcoe/pcoe-data-set-repository/) |
-| **NASA N-CMAPSS** | Turbofan Engine Degradation Simulation-2 (실제 비행 조건 반영) | [NASA PCoE Data Repository](https://www.nasa.gov/intelligent-systems-division/discovery-and-systems-health/pcoe/pcoe-data-set-repository/) |
+| **NASA C-MAPSS** | Turbofan Engine Degradation Simulation (RUL, FD001~FD004) | [NASA PCoE](https://www.nasa.gov/intelligent-systems-division/discovery-and-systems-health/pcoe/pcoe-data-set-repository/) |
+| **NASA N-CMAPSS** | Turbofan Degradation Simulation-2 (실측 비행 조건, 43 features) | [NASA PCoE](https://www.nasa.gov/intelligent-systems-division/discovery-and-systems-health/pcoe/pcoe-data-set-repository/) |
 | **AI4I 2020** | Milling machine predictive maintenance | [UCI ML Repository](https://archive.ics.uci.edu/dataset/601/ai4i+2020+predictive+maintenance+dataset) |
-| **Condition Monitoring of Hydraulic Systems** | 유압 시스템 상태 모니터링 | [UCI ML Repository](https://archive.ics.uci.edu/dataset/447/condition+monitoring+of+hydraulic+systems) |
-| **PHM 2012 Bearing** | IEEE PHM 2012 Prognostic Challenge (FEMTO-ST) | [FEMTO-ST / IEEE PHM 2012](https://github.com/wkzs111/phm-ieee-2012-data-challenge-dataset) |
-| **CWRU Bearing Data** | Case Western Reserve University Bearing Data Center | [CWRU Bearing Data Center](https://engineering.case.edu/bearingdatacenter) |
+| **Hydraulic Systems** | 유압 시스템 상태 모니터링 | [UCI ML Repository](https://archive.ics.uci.edu/dataset/447/condition+monitoring+of+hydraulic+systems) |
+| **PHM 2012 Bearing** | IEEE PHM 2012 (FEMTO-ST) | [GitHub: wkzs111/phm-ieee-2012](https://github.com/wkzs111/phm-ieee-2012-data-challenge-dataset) |
+| **CWRU Bearing** | Case Western Reserve Bearing Data | [CWRU Data Center](https://engineering.case.edu/bearingdatacenter) |
 
-> 각 데이터셋의 라이선스·인용 조건은 원 제공처 정책을 따르십시오.
-
-### 배치 예시
+배치 예시:
 
 ```text
 models_core/dataset/
-├── CMAPSSData/
-├── 17. Turbofan Engine Degradation Simulation Data Set 2/   # N-CMAPSS
-├── ai4i2020.csv
+├── CMAPSSData/                                                # FD001~FD004
+├── 17. Turbofan Engine Degradation Simulation Data Set 2/    # N-CMAPSS
+├── ai4i2020.csv (또는 AI4I-PMDI.csv)
 ├── condition+monitoring+of+hydraulic+systems/
 ├── PHM2012/
-└── 10987113/                                                # CWRU
+└── 10987113/                                                   # CWRU
 ```
+
+각 데이터셋의 라이선스·인용 조건은 원 제공처 정책을 따르십시오.
+
+---
+
+## 모델
+
+### Dataset Keys (PIPELINE)
+
+| dataset_key | Task | 모델 | 파라미터 (F=14, L=30) |
+|---|---|---|---|
+| `ai4i_cnn` | 이진 분류 | TabularCNN1D | — |
+| `ai4i_gbdt` | 이진 분류 | GBDT (sklearn HistGradientBoosting) | — |
+| `cwru_cnn` | 다중 분류 (10-class) | WDCNN1D (Wide-kernel CNN) | — |
+| `hydraulic_ae` | 이상 탐지 | Denoising AE | — |
+| `cmapss_lstm` / `cmapss_lstm_fd001~fd004` | RUL 회귀 | BiLSTM + Attention | **551,234** |
+| `cmapss_dlinear` / `cmapss_dlinear_fd001~fd004` | RUL 회귀 | **DLinear** | **883** |
+| `cmapss_itransformer` / `cmapss_itransformer_fd001~fd004` | RUL 회귀 | **iTransformer** | **401,026** |
+| `ncmapss_lstm` | RUL 회귀 | BiLSTM + Attention (43 features, hidden=256) | — |
+| `ncmapss_dlinear` | RUL 회귀 | DLinear | — |
+| `ncmapss_itransformer` | RUL 회귀 | iTransformer | — |
+
+### RUL 회귀 모델 비교 (C-MAPSS FD001~FD004, multi-seed)
+
+| 모델 | 설계 철학 | 강점 | 약점 |
+|---|---|---|---|
+| **BiLSTM + Attention** | Temporal recurrence + 시점 가중 | dynamic change 강한 FD (003, 001) 우수 | 파라미터 많음 |
+| **DLinear** | Trend + Seasonal 분해 + 채널 독립 | 매우 작음 (883), 안정적 (std 0.07~0.15) | 모든 FD에서 +22~32% RMSE 손해 |
+| **iTransformer** | Variate tokenization + Cross-channel attention | mean \|corr\| 강한 FD (002, 004) 기대 | 시변 강한 FD에선 BiLSTM에 근소 열세 |
+
+논문:
+- **DLinear**: [Zeng et al. 2023, "Are Transformers Effective for Time Series Forecasting?"](https://arxiv.org/abs/2205.13504)
+- **iTransformer**: [Liu et al. 2024 ICLR, "iTransformer: Inverted Transformers Are Effective for Time Series Forecasting"](https://arxiv.org/abs/2310.06625)
+
+---
+
+## 평가 메트릭
+
+### 분류 (AI4I, CWRU)
+- Accuracy, Precision, Recall, F1
+- **Confusion Matrix** (TP/FP/FN/TN, False Alarm Rate)
+- **PR-AUC, ROC-AUC** (불균형 데이터 평가)
+
+### RUL 회귀 (C-MAPSS, N-CMAPSS)
+- RMSE, MAE, R²
+- **NASA PHM Score** (asymmetric scoring function, late prediction 강한 패널티 — RUL 의사결정 비용 metric)
+  - d = pred - true
+  - d ≥ 0 (late): exp(d/10) - 1
+  - d < 0 (early): exp(-d/13) - 1
+
+### 이상 탐지 (Hydraulic)
+- F1, Precision, Recall
+- Percentile grid search (85~99) + Mahalanobis distance 임계값 최적화
+
+---
+
+## 분석 노트북
+
+- `notebooks/sensor_correlation_analysis.ipynb` — C-MAPSS FD001~FD004 sensor 간 cross-correlation + dynamic change + RUL Mutual Information 분석. iTransformer 도입 정당화 근거.
+- `notebooks/multiseed_3way_comparison.ipynb` — BiLSTM / DLinear / iTransformer 3-way 비교 시각화 (7개 차트: RMSE/NASA bar, multi-seed box plot, correlation 예측 검증 산점도, parameter trade-off, model selection heatmap 등).
 
 ---
 
 ## 테스트
 
 ```bash
-python test_validation_step.py
-python test_pdm_lstm_step.py
-python test_analyze_lstm_step.py
+# Smoke (Dash boot + Services fallback 경로)
+pytest tests/test_smoke.py -v
+
+# 개별 step 테스트
+pytest tests/test_validation_step.py -v
+pytest tests/test_pdm_lstm_step.py -v
+pytest tests/test_analyze_lstm_step.py -v
+pytest tests/test_llm_stream_step.py -v
 ```
 
 ---
 
-## 브랜치 전략
+## 향후 로드맵
 
-- `update`: 현재 개발 브랜치 (LLM 파이프라인 P1·P2 고도화 반영)
-- 이후 기능은 별도 브랜치에서 작업 후 머지 예정 (예: P3 — RAG / multiturn / function calling / streaming)
+- **남은 UI 페이지**: LSTM Analysis / Diagnostics / Risk Simulator 완성
+- **N-CMAPSS 전체 비교**: BiLSTM + DLinear + iTransformer 학습 + 분석
+- **AI4I CNN recall 개선**: Focal loss tuning, class-balanced sampling (현재 recall 0.706 → 0.85+ 목표)
+- **이상 탐지 강화**: VAE + Isolation Forest 앙상블 (Hydraulic F1 0.83 → 0.90+ 기대)
+- **추가 모델**: PatchTST + channel-mixing, TCN, TFT (외부 GPU 환경)
+- **인프라**: Docker Compose (Dash + Postgres) → PostgreSQL 마이그레이션 → FastAPI 분리 → 실시간 워커 (MQTT/Kafka)
+- **CPU 가속**: Intel Extension for PyTorch (IPEX), `torch.compile()`
 
 ---
 
