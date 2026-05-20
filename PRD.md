@@ -595,6 +595,49 @@ python -m scripts.migrations.bootstrap_admin --password-file /run/secrets/admin_
 
 **다음 단계 (P1-b, 예상 0.5~1d)**: Flask 인증 라우트 (login/logout/session) + `services/auth/sessions.py` (Flask-Login 또는 직접 session 관리 결정).
 
+### T1.5 P1-b 구현 완료 (2026-05-20) — Flask 인증 라우트 + Dash 페이지 가드
+
+**설계 결정 4건 (외부 리뷰 합의)**:
+1. session 라이브러리: **직접 Flask session** (Flask-Login 미도입 — PoC 단일 사용자, 의존성 최소)
+2. CSRF 방어: **수동 csrf token** (login 폼만 — Flask-WTF 미도입)
+3. 가드 위치: **`@server.before_request` 단일 진입점** (페이지 decorator 대신)
+4. `OMNIPDM_SECRET_KEY` 미설정 시: **random fallback + 경고** (개발 편의 vs hard error)
+
+| 산출물 | 비고 |
+|---|---|
+| [models_core/config.py](models_core/config.py) §7 | `OMNIPDM_SECRET_KEY` 환경변수 + `secrets.token_urlsafe(32)` fallback + 경고 |
+| [services/auth/users.py](services/auth/users.py) | `UserService` Protocol + Null/Timescale impls. `verify_credentials` 가 모든 실패 경로에서 `verify_password` 1회 호출 → timing 평탄화 (NIST/OWASP 권장). password_hash 는 `User` dataclass 에서 제외 |
+| [services/auth/sessions.py](services/auth/sessions.py) | `login_user` / `logout_user` / `current_user` / `is_authenticated` / `current_user_id` + CSRF (`get_or_create_csrf_token` / `verify_csrf_token` / `rotate_csrf_token` — session fixation 방어). audit_log 자동 INSERT (`LOGIN_SUCCESS` / `LOGIN_FAILURE` / `LOGOUT`) |
+| [services/auth/routes.py](services/auth/routes.py) | Flask Blueprint (`/login` GET/POST, `/logout` GET/POST). Bootstrap CDN HTML 임베드, `_is_safe_next` 로 open redirect 방어. Dash page 로 등록 안 함 (test_smoke 의 6 페이지 카운트 유지) |
+| [app.py](app.py) | `server.secret_key` 설정 + blueprint 등록 + `@server.before_request` 가드 + `OMNIPDM_AUTH_REQUIRED` toggle + `_dash` / `/static` / `/assets` exempt + 동적 navbar (logout 링크). `audit_conn_provider` 는 closure 캐시로 connection leak 방지 |
+| [tests/test_auth_sessions.py](tests/test_auth_sessions.py) | 14 unit tests (CSRF, 인증 실패/성공, ?next= 보존, open redirect 차단, 가드 exempt, logout) — Mock UserService 주입, CI smoke 외부 의존 0 |
+
+**외부 리뷰 흡수 (P1-b 작성 중 12건 평가 → 4건 채택)**:
+- 채택: `verify_credentials` 의 inactive user dummy verify (timing 평탄화), `PLACEHOLDER_HASH` module-level import, `audit_conn_provider` closure 캐시, `_is_safe_next` open redirect 방어
+- 거부: `row_factory=dict_row` (positional tuple 일관성), `print` → `logging` 마이그레이션 (전체 일관성), `dcc.Link` 로 logout (Flask 라우트 호출 안 됨), Flask-Login/Flask-WTF 도입 (PoC 과잉)
+
+**환경변수 운영 가이드**:
+```bash
+# 운영 필수
+export OMNIPDM_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+
+# 개발 편의 (인증 비활성)
+export OMNIPDM_AUTH_REQUIRED=false
+```
+
+**Future migration 메모 (사용자 5명+ 시점)**:
+- Flask-Login + Flask-WTF 도입 검토 — multi-factor / "remember me" / session protection 강화
+- psycopg `ConnectionPool` 로 audit_conn_provider 교체
+- RBAC `@role_required` 본문 활성화 (P1-c)
+- Row-Level Security (RLS) — devices/maintenance_orders 에 role 기반 정책
+
+**검증 결과**:
+- `pytest tests/test_auth_sessions.py -v` → **14 passed**
+- `pytest tests/` → **62 passed, 4 skipped, 0 failed** (P1-a 의 48 + 신규 14)
+- `app.server.test_client()` smoke: `/login` 200 / `/logout` 302 / `/` 302→`/login?next=/` / `/status?foo=bar` 302→`/login?next=/status?foo=bar`
+
+**다음 단계 (P1-c, 예상 2~3h)**: `services/auth/sessions.py` 에 `role_required` 데코레이터 본문 활성화 + `services/realtime/device_service.scope_required` placeholder 와 통합. 기존 Dash 페이지 callback 에 부착.
+
 ## 13.2 부분 검증 / 향후 작업
 - AI4I recall 0.85+ 목표 미달 — 클래스 reweighting + Optuna 탐색은 향후 작업
 - FD002 iTransformer 열세 원인 정밀 분석 (operating regime 별 잔차 분포)
