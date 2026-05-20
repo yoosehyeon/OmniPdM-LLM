@@ -30,8 +30,12 @@ services:
       - "127.0.0.1:5432:5432"
     volumes:
       - timescaledb_data:/var/lib/postgresql/data
-      # init SQL: 컨테이너 최초 기동 시 1회 실행. hypertable 생성.
-      - ./infra/timescaledb/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      # initdb 스크립트: postgres 공식 entrypoint 가 알파벳순으로 실행한다.
+      # 00_ : 기본 hypertable 3종 (telemetry/predictions/alerts) — T1-03.
+      # 01_ : CMMS Tier 1.5 P0 (users/devices/orders/status_history/audit_log + FK + 트리거) — T1.5.
+      # 새 마이그레이션 추가 시 02_, 03_ ... 로 prefix 를 늘려 이 볼륨 목록에 1줄씩 추가.
+      - ./infra/timescaledb/init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+      - ./infra/timescaledb/migrations/001_cmms_schema.sql:/docker-entrypoint-initdb.d/01_cmms_schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U omnipdm -d omnipdm"]
       interval: 10s

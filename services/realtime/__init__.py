@@ -8,6 +8,13 @@ MQTT telemetry 를 구독하고 위험도가 임계 이상이면 외부 채널�
 """
 
 from services.realtime.db_writer import DbWriter, NullDbWriter, TimescaleDbWriter
+from services.realtime.device_service import (
+    Device,
+    DeviceService,
+    NullDeviceService,
+    TimescaleDeviceService,
+    scope_required,
+)
 from services.realtime.mqtt_worker import MqttWorker, WorkerStats
 from services.realtime.notifier import (
     Notifier,
@@ -26,4 +33,9 @@ __all__ = [
     "DbWriter",
     "NullDbWriter",
     "TimescaleDbWriter",
+    "Device",
+    "DeviceService",
+    "NullDeviceService",
+    "TimescaleDeviceService",
+    "scope_required",
 ]

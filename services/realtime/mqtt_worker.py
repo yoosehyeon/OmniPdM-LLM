@@ -33,6 +33,7 @@ import paho.mqtt.client as mqtt
 from models_core import config
 from services.pdm_service import PdmService
 from services.realtime.db_writer import DbWriter, NullDbWriter
+from services.realtime.device_service import DeviceService, NullDeviceService
 from services.realtime.notifier import Notifier, NotifyResult, StdoutNotifier
 from services.risk_service import RiskService
 
@@ -67,6 +68,7 @@ class MqttWorker:
         risk: Optional[RiskService] = None,
         notifier: Optional[Notifier] = None,
         db: Optional[DbWriter] = None,
+        devices: Optional[DeviceService] = None,
         host: Optional[str] = None,
         port: Optional[int] = None,
         topic: Optional[str] = None,
@@ -80,6 +82,9 @@ class MqttWorker:
         # DbWriter 기본은 NullDbWriter — 외부 DB 없이도 워커 동작. TimescaleDbWriter 는
         # 호출자가 명시적으로 주입 (run_worker.py 가 config 보고 결정).
         self.db: DbWriter = db if db is not None else NullDbWriter()
+        # DeviceService — telemetry FK (devices.device_id) 충족을 위해 publish 직전 upsert.
+        # T1.5 P0. 기본은 NullDeviceService — DB 없이도 워커 hot path 동작.
+        self.devices: DeviceService = devices if devices is not None else NullDeviceService()
 
         self.host = host if host is not None else config.MQTT_HOST
         self.port = port if port is not None else config.MQTT_PORT
@@ -124,6 +129,13 @@ class MqttWorker:
             self.stats.failed += 1
             print(f"[MqttWorker] payload parse failed (device={device_id}): {e}", flush=True)
             return NotifyResult.FAILED
+
+        # 2.4 DeviceService: 첫 publish 인 device 만 INSERT. 캐시 hit 시 DB 왕복 0회 (T1.5 P0).
+        # FK (telemetry.device_id → devices.device_id) 충족용. 실패는 _db_safe 가 흡수.
+        self._db_safe(
+            lambda: self.devices.upsert_device(device_id, self.pdm.dataset_key),
+            op="upsert_device",
+        )
 
         # 2.5 DB: telemetry 저장 (추론과 무관하게 raw 보존 — 파싱 통과만 하면 기록).
         # DbWriter 실패는 워커 루프 죽이지 않음, _db_safe 가 내부에서 catch.
@@ -242,6 +254,11 @@ class MqttWorker:
         # DB connection 정리 — start() 호출 안 했어도 안전 (NullDbWriter.close() = no-op).
         try:
             self.db.close()
+        except Exception:
+            pass
+        # DeviceService 도 별도 connection 일 수 있음 — 함께 정리.
+        try:
+            self.devices.close()
         except Exception:
             pass
         self._client = None

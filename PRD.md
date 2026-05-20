@@ -539,6 +539,32 @@ CMMS Tier 1.5 진입 전 결정해야 하는 7개 항목 + 외부 리뷰 보완 
 
 P0 작업량: 1.5d + 1h (당초 1.5d 에서 외부 리뷰 흡수로 +1h).
 
+### T1.5 P0 구현 완료 (2026-05-20)
+
+| 산출물 | 비고 |
+|---|---|
+| [infra/timescaledb/migrations/001_cmms_schema.sql](infra/timescaledb/migrations/001_cmms_schema.sql) | 5 테이블 + 4 인덱스 + backfill + FK 3종 + `updated_at`/`closed_at` 트리거. 멱등 (`IF NOT EXISTS`, `pg_constraint`/`pg_trigger` 가드) |
+| [docker-compose.yml](docker-compose.yml) volumes | `init.sql → 00_init.sql`, `migrations/001_cmms_schema.sql → 01_cmms_schema.sql` 명시 마운트 (postgres entrypoint 가 알파벳순 실행) |
+| [services/audit_actions.py](services/audit_actions.py) | `AuditAction` enum + `TARGET_TYPE_*` 상수 + `log()` (psycopg `Jsonb` adapter, system_event 자동 추가, PII 금지 docstring) |
+| [services/realtime/device_service.py](services/realtime/device_service.py) | `DeviceService` Protocol + `NullDeviceService` + `TimescaleDeviceService` (upsert 캐시, `set_status`/`mark_deleted` 트랜잭션, audit_log 자동 통합) + `scope_required` placeholder |
+| [services/realtime/mqtt_worker.py](services/realtime/mqtt_worker.py) | `devices` DI + `process_message` 에 `upsert_device` 추가 (FK 충족용, hot path 캐시 hit) |
+| [scripts/realtime/run_worker.py](scripts/realtime/run_worker.py) | `_resolve_device_service` 추가 — `DB_ENABLED` / `--no-db` 보고 dispatch |
+| [tests/conftest.py](tests/conftest.py) + [tests/realtime/test_device_service.py](tests/realtime/test_device_service.py) | unit (mock, 4 pass) + integration (`OMNIPDM_TEST_DB_URL` 설정 시만, 미설정 자동 skip → CI smoke 영향 0) |
+
+**마운트 컨벤션 (확정)**: postgres 공식 entrypoint 는 `/docker-entrypoint-initdb.d/` **직속 파일**만 알파벳순 실행 (하위 디렉토리 무시). 따라서 신규 마이그레이션 추가 시 `docker-compose.yml` 의 `timescaledb.volumes` 에 `02_*.sql`, `03_*.sql` 형식으로 1줄씩 추가하는 컨벤션 채택. PRD `migrations/001_*.sql` 디렉토리 명명은 유지.
+
+**의도된 atomicity 비대칭** (device_service 구현 결정): `upsert_device` 의 device INSERT 와 audit_log INSERT 는 **별도 트랜잭션**이다. audit 실패가 device 생성을 rollback 시키면 telemetry FK 위반으로 워커 hot path 가 깨진다. audit_log 는 부가, device 는 필수 — 의도된 비대칭. `set_status` / `mark_deleted` 는 사용자 명시 행동이라 audit 까지 한 트랜잭션으로 묶음.
+
+**외부 리뷰 추가 흡수 (P0 작성 중 11건 평가 → 6건 채택)**:
+- 채택: `updated_at` 자동 트리거, `closed_at` 자동 트리거, backfill `RAISE NOTICE`, psycopg `Jsonb` adapter, `TARGET_TYPE_*` 상수, `mark_deleted` 캐시 discard 를 트랜잭션 내부로 이동
+- 거부: `target_type` Enum 강제 (T1.5 결정 #7 정책 동일), `tenacity` retry (PoC), `row_factory` namedtuple (YAGNI), 명시 `BEGIN` (psycopg v3 autocommit=False 가 implicit), `logging.getLogger` (services/realtime/* 전체 `print` 일관성)
+
+**검증 결과**:
+- `pytest tests/realtime/test_device_service.py -v` → **4 passed, 4 skipped** (integration 은 DB URL 없어 자동 skip)
+- `pytest tests/test_smoke.py tests/test_validation_step.py` → **30 passed** (회귀 0)
+
+**다음 단계 (P1, 예상 2~3d)**: Flask 인증 라우트 + `@role_required` 데코레이터 본문 + Dash devices/orders 페이지 + werkzeug 비밀번호 hash 마이그레이션 (seed admin placeholder 교체).
+
 ## 13.2 부분 검증 / 향후 작업
 - AI4I recall 0.85+ 목표 미달 — 클래스 reweighting + Optuna 탐색은 향후 작업
 - FD002 iTransformer 열세 원인 정밀 분석 (operating regime 별 잔차 분포)
