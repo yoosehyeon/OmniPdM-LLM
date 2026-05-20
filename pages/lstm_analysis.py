@@ -97,12 +97,16 @@ input_card = dbc.Card(
                     id="lstm-dataset",
                     options=[
                         {"label": "C-MAPSS (BiLSTM, 14 sensors)", "value": "cmapss_lstm"},
-                        {"label": "C-MAPSS (DLinear, baseline)", "value": "cmapss_dlinear"},
-                        {"label": "C-MAPSS (iTransformer, cross-channel)", "value": "cmapss_itransformer"},
                         {"label": "N-CMAPSS (BiLSTM, 43 features)", "value": "ncmapss_lstm"},
                     ],
                     value="cmapss_lstm",
                     clearable=False,
+                    className="mb-2",
+                ),
+                dbc.FormText(
+                    "DLinear / iTransformer 비교는 학술 스크립트 (scripts/training/main.py) 로 수행. "
+                    "라이브 UI 추론은 BiLSTM 만 지원.",
+                    color="muted",
                     className="mb-2",
                 ),
                 dbc.Label("Asset ID"),
@@ -225,7 +229,27 @@ def run_lstm(_n_clicks, sequence_text, dataset_key, asset_id):
             no_update, no_update, no_update, no_update, no_update,
         )
 
-    service = get_analyze_service(mode="lite", dataset_key=dataset_key)
+    # LSTM sequence 추론은 실제 체크포인트가 필요 → full mode.
+    # 체크포인트 미존재 / 로드 실패 시 사용자에게 친절한 안내.
+    try:
+        service = get_analyze_service(mode="full", dataset_key=dataset_key)
+    except FileNotFoundError as e:
+        return (
+            dbc.Alert(
+                [
+                    html.Strong(f"{dataset_key} 체크포인트를 찾을 수 없습니다."),
+                    html.Br(),
+                    "먼저 학습 스크립트로 모델을 생성해야 합니다:",
+                    html.Pre(
+                        f"python -m scripts.training.main --datasets {dataset_key}",
+                        style={"backgroundColor": "#f8f9fa", "padding": "8px", "marginTop": "8px"},
+                    ),
+                    html.Small(f"상세: {e}", className="text-muted"),
+                ],
+                color="warning",
+            ),
+            no_update, no_update, no_update, no_update, no_update,
+        )
 
     # 데이터셋별 기본 feature_names
     if dataset_key.startswith("cmapss_"):

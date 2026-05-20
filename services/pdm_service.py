@@ -190,21 +190,33 @@ class PdmService:
     def _find_checkpoint(self, stem: str, suffix: str) -> Path:
         """체크포인트 경로 해결.
 
-        1) 로컬 `config.CHECKPOINT_DIR` 에 `{stem}*{suffix}` 가 있으면 최신 파일 사용 (개발 환경).
-        2) 없으면 HF Model Hub (`config.CHECKPOINT_REPO`) 에서 download 후 캐시 경로 반환.
+        1) 로컬 `config.CHECKPOINT_DIR` 에서 정확히 `{stem}_<digits>...` 패턴만 매칭.
+           예: stem="ai4i_cnn" 일 때 `ai4i_cnn_recall_*.pt` 같은 longer-stem 변형은 제외하기 위해
+           `_` 직후 첫 글자가 숫자(timestamp 시작) 여야 한다.
+        2) 없으면 HF Model Hub (`config.CHECKPOINT_REPO`) 에서 동일 규칙으로 매칭 후 download.
            동일 stem 의 `_meta.json` 도 함께 pull 해 `_load_checkpoint_meta()` 가 읽을 수 있게 한다.
         """
+        prefix = f"{stem}_"
+
+        def _is_exact_stem_match(name: str) -> bool:
+            """name 이 '{stem}_<digit>...{suffix}' 형태인지."""
+            if not name.startswith(prefix) or not name.endswith(suffix):
+                return False
+            tail = name[len(prefix):]
+            return len(tail) > 0 and tail[0].isdigit()
+
         if config.CHECKPOINT_DIR.exists():
-            local = sorted(config.CHECKPOINT_DIR.glob(f"{stem}*{suffix}"))
+            local = sorted(
+                p for p in config.CHECKPOINT_DIR.glob(f"{stem}_*{suffix}")
+                if _is_exact_stem_match(p.name)
+            )
             if local:
                 return local[-1]
 
         from huggingface_hub import hf_hub_download, list_repo_files
 
         all_files = list_repo_files(config.CHECKPOINT_REPO, repo_type="model")
-        matches = sorted(
-            f for f in all_files if f.startswith(f"{stem}_") and f.endswith(suffix)
-        )
+        matches = sorted(f for f in all_files if _is_exact_stem_match(f))
         if not matches:
             raise FileNotFoundError(
                 f"No checkpoint for {stem}{suffix} in {config.CHECKPOINT_REPO}"
