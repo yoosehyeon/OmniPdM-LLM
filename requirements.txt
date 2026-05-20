@@ -11,6 +11,9 @@ huggingface_hub>=0.24
 dash>=2.18
 dash-bootstrap-components>=1.6
 plotly>=5.24
+# werkzeug 은 Dash → Flask transitive 의존이지만, services/auth/passwords.py 가 직접
+# 사용하므로 명시. 3.x 부터 generate_password_hash 기본이 scrypt.
+werkzeug>=3.0
 
 # LLM (Groq OpenAI-compatible)
 openai>=1.40

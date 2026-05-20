@@ -565,6 +565,36 @@ P0 작업량: 1.5d + 1h (당초 1.5d 에서 외부 리뷰 흡수로 +1h).
 
 **다음 단계 (P1, 예상 2~3d)**: Flask 인증 라우트 + `@role_required` 데코레이터 본문 + Dash devices/orders 페이지 + werkzeug 비밀번호 hash 마이그레이션 (seed admin placeholder 교체).
 
+### T1.5 P1-a 구현 완료 (2026-05-20) — werkzeug hash + admin seed 부트스트랩
+
+| 산출물 | 비고 |
+|---|---|
+| [services/auth/passwords.py](services/auth/passwords.py) | `hash_password` / `verify_password` / `is_placeholder_hash` (werkzeug.security 얇은 wrapper). placeholder hash 는 verify 시 무조건 reject — 부트스트랩 누락 사고 차단. 비문자열 입력 robust (`isinstance` 가드) |
+| [scripts/migrations/bootstrap_admin.py](scripts/migrations/bootstrap_admin.py) | CLI: `--password-file` > env > `--interactive` 우선순위 (K8s/Docker secret 표준 준수). `--dry-run` / `--force` / POSIX 0600 권한 검사 (Windows 가드). 성공 시 `AuditAction.USER_UPDATED` + meta(reason/force/was_placeholder) 자동 INSERT. Exit codes 0/1/2/3 명시 |
+| [tests/test_passwords.py](tests/test_passwords.py) | 13 unit tests — hash idempotency 거부, salt 무작위성, placeholder reject 무조건, 비문자열 입력 robust |
+| [requirements.txt](requirements.txt) | `werkzeug>=3.0` 직접 의존 명시 (Dash transitive 이지만 명확화) |
+
+**외부 리뷰 흡수 (P1-a 작성 중 8건 평가 → 4건 채택)**:
+- 채택: `--password-file` 최우선 (K8s/Docker secret 표준), `--dry-run`, `psycopg.Error` 명시 catch + exit code 3, POSIX 권한 검사 (Windows 가드)
+- 거부: env var 제거 (CI 자동화 필수), logging 마이그레이션 (services/realtime/* 일관성), `PLACEHOLDER_HASH = "!"` (이미 ship 된 SQL 과 호환 파괴), password_policy 모듈 분리 (YAGNI)
+
+**사용법**:
+```bash
+# 첫 부트스트랩 (대화형)
+python -m scripts.migrations.bootstrap_admin --interactive
+
+# CI (env var, 사용 후 즉시 unset)
+export OMNIPDM_ADMIN_BOOTSTRAP_PASSWORD=changeme
+python -m scripts.migrations.bootstrap_admin
+unset OMNIPDM_ADMIN_BOOTSTRAP_PASSWORD
+
+# K8s/Docker (secret 파일)
+chmod 600 /run/secrets/admin_pw
+python -m scripts.migrations.bootstrap_admin --password-file /run/secrets/admin_pw
+```
+
+**다음 단계 (P1-b, 예상 0.5~1d)**: Flask 인증 라우트 (login/logout/session) + `services/auth/sessions.py` (Flask-Login 또는 직접 session 관리 결정).
+
 ## 13.2 부분 검증 / 향후 작업
 - AI4I recall 0.85+ 목표 미달 — 클래스 reweighting + Optuna 탐색은 향후 작업
 - FD002 iTransformer 열세 원인 정밀 분석 (operating regime 별 잔차 분포)
