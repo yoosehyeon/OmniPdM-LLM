@@ -481,6 +481,64 @@ baseline (recall 0.706) 대비 **+3.7%p**. 목표 0.85+ 미달, variance 큼 (0.
 - 익명 viewer + Grafana home dashboard 설정 (인증 통합 전 임시 우회 회피)
 - Tier 2 데이터셋 확장 (MIMII 등)
 
+### T1.5 사전 의사결정 v1.0 (2026-05-20 확정)
+
+CMMS Tier 1.5 진입 전 결정해야 하는 7개 항목 + 외부 리뷰 보완 흡수 결과를 명시하여 다음 세션의 단일 진입 참조점으로 사용한다.
+
+**근거 출처**:
+- ISO 55001:2024 §5.3 (자산관리시스템 역할/책임/권한)
+- NIST SP 800-53 AC-2 / AC-3 / AC-5 / AC-6 (Least Privilege, Separation of Duties, RBAC, Audit)
+- TimescaleDB 공식 가이드 (hypertable → regular table FK 완전 지원)
+- Flask-SQLAlchemy 베스트 프랙티스
+- CMMS 산업 사례 (LLumin, ClickMaint, Fiix, Maximo, UpKeep)
+
+**의사결정 7건**:
+
+| # | 항목 | 결정 | 한 줄 요약 |
+|---|---|---|---|
+| 1 | device_id 외래키 | 강결합 + ON DELETE RESTRICT + TEXT PK 유지 + soft delete | hypertable → regular table FK 공식 지원, 기존 'milling-01' 식별자 호환 |
+| 2 | 인증 사용자 DB | TimescaleDB 동일 인스턴스 (users 테이블) | Flask-SQLAlchemy 표준, FK 연계 + 백업 단순 |
+| 3 | PDF export | xhtml2pdf 우선, 품질 부족 시 weasyprint 전환 | Windows GTK/Pango/Cairo 의존성 회피, 한국어 @font-face 즉시 가능 |
+| 4 | Grafana 인증 | PoC: 별도 로그인 유지. SSO 는 외부 사용자 도입 시점 | Nginx auth_proxy 도입 비용 > admin/admin 2회 로그인 비용 |
+| 5 | RBAC 구현 깊이 | 3-role + hard-coded @role_required (PoC) | Flask 공식 RBAC 튜토리얼 패턴, middleware 는 사용자 2명+ 시 |
+| 6 | Scoping | devices 컬럼만 추가 (plant_id, equipment_group_id). 쿼리 필터링은 사용자 5명+ 시 | 데이터 모델 미리 준비, middleware 는 트리거 충족 시 |
+| 7 | Audit log | 도입 (NIST AC-6) | 비용 작고 디버깅에도 유리 |
+
+**외부 리뷰 보완 흡수 (9 채택 / 1 거부 / 1 조정)**:
+
+| 보완 | 판정 | 사유 |
+|---|---|---|
+| 인덱스 추가 (4개 선별) | 채택 | maintenance_orders(device_id,status), (assigned_to,status), audit_log(occurred_at DESC), devices(current_status). 나머지 3개는 사용자 2명+ 시 추가 |
+| soft delete `active_filter` 공통 메서드 | 채택 | device_service.py 작성 시 자연스럽게 도입 |
+| FK 추가 순서 (테이블 → backfill → FK) | 채택 | backfill 없이 FK 추가 시 기존 데이터 무결성 위반 |
+| backfill SQL | 채택 (수정) | 리뷰의 `dataset_key='legacy'` 하드코딩은 부정확 — 실제 telemetry.dataset_key 그대로 사용해야 워커 publish 와 일치 |
+| scope_required 데코레이터 placeholder | 채택 | PoC 는 NULL 우회, 정의만 둬서 미래 확장 비용 0 |
+| simulator device upsert 추상화 (`device_service.upsert_device`) | 채택 | 한 곳만 수정으로 scoping 컬럼 확장 흡수 |
+| xhtml2pdf link_callback + Noto Sans KR @font-face | 채택 (조정) | 리뷰의 `app.root_path` 는 Flask app context 의존, Dash 환경에서는 `Path(__file__).parent / "static" / "fonts"` 직접 경로 계산 |
+| PRD 회고 한 문장 추가 | 채택 | 비용 0, 가독성↑ |
+| 의사결정 큐 각 항목 한 줄 요약 | 채택 | 위 표에 반영 |
+| **audit_log.action CHECK constraint** | **거부** | PoC 단계에서 action 종류 빠르게 증가. CHECK 추가 시 매번 ALTER TABLE 필요 → 유연성 저하. 대안: `services/audit_actions.py` Python 상수로 enum 관리. CHECK 는 사용자 5+ / production 시점에 |
+
+**P0 진입 직전 산출물 명세 (다음 세션 시작점)**:
+
+`infra/timescaledb/migrations/001_cmms_schema.sql` (또는 init.sql 확장):
+
+1. 신규 5 테이블: `users`, `devices`, `maintenance_orders`, `device_status_history`, `audit_log`
+2. 인덱스 4개:
+   - `maintenance_orders(device_id, status)`
+   - `maintenance_orders(assigned_to, status)`
+   - `audit_log(occurred_at DESC)`
+   - `devices(current_status)`
+3. backfill: `INSERT INTO devices SELECT DISTINCT ON (device_id) device_id, dataset_key, device_id, 'plant-01', TRUE FROM telemetry ORDER BY device_id, time DESC ON CONFLICT DO NOTHING`
+4. 기존 hypertable 3종에 FK 추가:
+   - `telemetry.device_id → devices.device_id ON DELETE RESTRICT`
+   - `predictions.device_id → devices.device_id ON DELETE RESTRICT`
+   - `alerts.device_id → devices.device_id ON DELETE RESTRICT`
+5. `services/realtime/device_service.py` 신규 (upsert_device 추상화)
+6. `services/audit_actions.py` 신규 (action 상수 enum 관리)
+
+P0 작업량: 1.5d + 1h (당초 1.5d 에서 외부 리뷰 흡수로 +1h).
+
 ## 13.2 부분 검증 / 향후 작업
 - AI4I recall 0.85+ 목표 미달 — 클래스 reweighting + Optuna 탐색은 향후 작업
 - FD002 iTransformer 열세 원인 정밀 분석 (operating regime 별 잔차 분포)
