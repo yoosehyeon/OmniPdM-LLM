@@ -481,6 +481,90 @@ baseline (recall 0.706) 대비 **+3.7%p**. 목표 0.85+ 미달, variance 큼 (0.
 - 익명 viewer + Grafana home dashboard 설정 (인증 통합 전 임시 우회 회피)
 - Tier 2 데이터셋 확장 (MIMII 등)
 
+### T1.5 사전 의사결정 v1.0 (2026-05-20 확정)
+
+CMMS Tier 1.5 진입 전 결정해야 하는 7개 항목 + 외부 리뷰 보완 흡수 결과를 명시하여 다음 세션의 단일 진입 참조점으로 사용한다.
+
+**근거 출처**:
+- ISO 55001:2024 §5.3 (자산관리시스템 역할/책임/권한)
+- NIST SP 800-53 AC-2 / AC-3 / AC-5 / AC-6 (Least Privilege, Separation of Duties, RBAC, Audit)
+- TimescaleDB 공식 가이드 (hypertable → regular table FK 완전 지원)
+- Flask-SQLAlchemy 베스트 프랙티스
+- CMMS 산업 사례 (LLumin, ClickMaint, Fiix, Maximo, UpKeep)
+
+**의사결정 7건**:
+
+| # | 항목 | 결정 | 한 줄 요약 |
+|---|---|---|---|
+| 1 | device_id 외래키 | 강결합 + ON DELETE RESTRICT + TEXT PK 유지 + soft delete | hypertable → regular table FK 공식 지원, 기존 'milling-01' 식별자 호환 |
+| 2 | 인증 사용자 DB | TimescaleDB 동일 인스턴스 (users 테이블) | Flask-SQLAlchemy 표준, FK 연계 + 백업 단순 |
+| 3 | PDF export | xhtml2pdf 우선, 품질 부족 시 weasyprint 전환 | Windows GTK/Pango/Cairo 의존성 회피, 한국어 @font-face 즉시 가능 |
+| 4 | Grafana 인증 | PoC: 별도 로그인 유지. SSO 는 외부 사용자 도입 시점 | Nginx auth_proxy 도입 비용 > admin/admin 2회 로그인 비용 |
+| 5 | RBAC 구현 깊이 | 3-role + hard-coded @role_required (PoC) | Flask 공식 RBAC 튜토리얼 패턴, middleware 는 사용자 2명+ 시 |
+| 6 | Scoping | devices 컬럼만 추가 (plant_id, equipment_group_id). 쿼리 필터링은 사용자 5명+ 시 | 데이터 모델 미리 준비, middleware 는 트리거 충족 시 |
+| 7 | Audit log | 도입 (NIST AC-6) | 비용 작고 디버깅에도 유리 |
+
+**외부 리뷰 보완 흡수 (9 채택 / 1 거부 / 1 조정)**:
+
+| 보완 | 판정 | 사유 |
+|---|---|---|
+| 인덱스 추가 (4개 선별) | 채택 | maintenance_orders(device_id,status), (assigned_to,status), audit_log(occurred_at DESC), devices(current_status). 나머지 3개는 사용자 2명+ 시 추가 |
+| soft delete `active_filter` 공통 메서드 | 채택 | device_service.py 작성 시 자연스럽게 도입 |
+| FK 추가 순서 (테이블 → backfill → FK) | 채택 | backfill 없이 FK 추가 시 기존 데이터 무결성 위반 |
+| backfill SQL | 채택 (수정) | 리뷰의 `dataset_key='legacy'` 하드코딩은 부정확 — 실제 telemetry.dataset_key 그대로 사용해야 워커 publish 와 일치 |
+| scope_required 데코레이터 placeholder | 채택 | PoC 는 NULL 우회, 정의만 둬서 미래 확장 비용 0 |
+| simulator device upsert 추상화 (`device_service.upsert_device`) | 채택 | 한 곳만 수정으로 scoping 컬럼 확장 흡수 |
+| xhtml2pdf link_callback + Noto Sans KR @font-face | 채택 (조정) | 리뷰의 `app.root_path` 는 Flask app context 의존, Dash 환경에서는 `Path(__file__).parent / "static" / "fonts"` 직접 경로 계산 |
+| PRD 회고 한 문장 추가 | 채택 | 비용 0, 가독성↑ |
+| 의사결정 큐 각 항목 한 줄 요약 | 채택 | 위 표에 반영 |
+| **audit_log.action CHECK constraint** | **거부** | PoC 단계에서 action 종류 빠르게 증가. CHECK 추가 시 매번 ALTER TABLE 필요 → 유연성 저하. 대안: `services/audit_actions.py` Python 상수로 enum 관리. CHECK 는 사용자 5+ / production 시점에 |
+
+**P0 진입 직전 산출물 명세 (다음 세션 시작점)**:
+
+`infra/timescaledb/migrations/001_cmms_schema.sql` (또는 init.sql 확장):
+
+1. 신규 5 테이블: `users`, `devices`, `maintenance_orders`, `device_status_history`, `audit_log`
+2. 인덱스 4개:
+   - `maintenance_orders(device_id, status)`
+   - `maintenance_orders(assigned_to, status)`
+   - `audit_log(occurred_at DESC)`
+   - `devices(current_status)`
+3. backfill: `INSERT INTO devices SELECT DISTINCT ON (device_id) device_id, dataset_key, device_id, 'plant-01', TRUE FROM telemetry ORDER BY device_id, time DESC ON CONFLICT DO NOTHING`
+4. 기존 hypertable 3종에 FK 추가:
+   - `telemetry.device_id → devices.device_id ON DELETE RESTRICT`
+   - `predictions.device_id → devices.device_id ON DELETE RESTRICT`
+   - `alerts.device_id → devices.device_id ON DELETE RESTRICT`
+5. `services/realtime/device_service.py` 신규 (upsert_device 추상화)
+6. `services/audit_actions.py` 신규 (action 상수 enum 관리)
+
+P0 작업량: 1.5d + 1h (당초 1.5d 에서 외부 리뷰 흡수로 +1h).
+
+### T1.5 P0 구현 완료 (2026-05-20)
+
+| 산출물 | 비고 |
+|---|---|
+| [infra/timescaledb/migrations/001_cmms_schema.sql](infra/timescaledb/migrations/001_cmms_schema.sql) | 5 테이블 + 4 인덱스 + backfill + FK 3종 + `updated_at`/`closed_at` 트리거. 멱등 (`IF NOT EXISTS`, `pg_constraint`/`pg_trigger` 가드) |
+| [docker-compose.yml](docker-compose.yml) volumes | `init.sql → 00_init.sql`, `migrations/001_cmms_schema.sql → 01_cmms_schema.sql` 명시 마운트 (postgres entrypoint 가 알파벳순 실행) |
+| [services/audit_actions.py](services/audit_actions.py) | `AuditAction` enum + `TARGET_TYPE_*` 상수 + `log()` (psycopg `Jsonb` adapter, system_event 자동 추가, PII 금지 docstring) |
+| [services/realtime/device_service.py](services/realtime/device_service.py) | `DeviceService` Protocol + `NullDeviceService` + `TimescaleDeviceService` (upsert 캐시, `set_status`/`mark_deleted` 트랜잭션, audit_log 자동 통합) + `scope_required` placeholder |
+| [services/realtime/mqtt_worker.py](services/realtime/mqtt_worker.py) | `devices` DI + `process_message` 에 `upsert_device` 추가 (FK 충족용, hot path 캐시 hit) |
+| [scripts/realtime/run_worker.py](scripts/realtime/run_worker.py) | `_resolve_device_service` 추가 — `DB_ENABLED` / `--no-db` 보고 dispatch |
+| [tests/conftest.py](tests/conftest.py) + [tests/realtime/test_device_service.py](tests/realtime/test_device_service.py) | unit (mock, 4 pass) + integration (`OMNIPDM_TEST_DB_URL` 설정 시만, 미설정 자동 skip → CI smoke 영향 0) |
+
+**마운트 컨벤션 (확정)**: postgres 공식 entrypoint 는 `/docker-entrypoint-initdb.d/` **직속 파일**만 알파벳순 실행 (하위 디렉토리 무시). 따라서 신규 마이그레이션 추가 시 `docker-compose.yml` 의 `timescaledb.volumes` 에 `02_*.sql`, `03_*.sql` 형식으로 1줄씩 추가하는 컨벤션 채택. PRD `migrations/001_*.sql` 디렉토리 명명은 유지.
+
+**의도된 atomicity 비대칭** (device_service 구현 결정): `upsert_device` 의 device INSERT 와 audit_log INSERT 는 **별도 트랜잭션**이다. audit 실패가 device 생성을 rollback 시키면 telemetry FK 위반으로 워커 hot path 가 깨진다. audit_log 는 부가, device 는 필수 — 의도된 비대칭. `set_status` / `mark_deleted` 는 사용자 명시 행동이라 audit 까지 한 트랜잭션으로 묶음.
+
+**외부 리뷰 추가 흡수 (P0 작성 중 11건 평가 → 6건 채택)**:
+- 채택: `updated_at` 자동 트리거, `closed_at` 자동 트리거, backfill `RAISE NOTICE`, psycopg `Jsonb` adapter, `TARGET_TYPE_*` 상수, `mark_deleted` 캐시 discard 를 트랜잭션 내부로 이동
+- 거부: `target_type` Enum 강제 (T1.5 결정 #7 정책 동일), `tenacity` retry (PoC), `row_factory` namedtuple (YAGNI), 명시 `BEGIN` (psycopg v3 autocommit=False 가 implicit), `logging.getLogger` (services/realtime/* 전체 `print` 일관성)
+
+**검증 결과**:
+- `pytest tests/realtime/test_device_service.py -v` → **4 passed, 4 skipped** (integration 은 DB URL 없어 자동 skip)
+- `pytest tests/test_smoke.py tests/test_validation_step.py` → **30 passed** (회귀 0)
+
+**다음 단계 (P1, 예상 2~3d)**: Flask 인증 라우트 + `@role_required` 데코레이터 본문 + Dash devices/orders 페이지 + werkzeug 비밀번호 hash 마이그레이션 (seed admin placeholder 교체).
+
 ## 13.2 부분 검증 / 향후 작업
 - AI4I recall 0.85+ 목표 미달 — 클래스 reweighting + Optuna 탐색은 향후 작업
 - FD002 iTransformer 열세 원인 정밀 분석 (operating regime 별 잔차 분포)

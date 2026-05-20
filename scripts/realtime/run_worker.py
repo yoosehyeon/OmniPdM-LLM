@@ -15,7 +15,13 @@ from __future__ import annotations
 import argparse
 
 from models_core import config
-from services.realtime import MqttWorker, NullDbWriter, TimescaleDbWriter
+from services.realtime import (
+    MqttWorker,
+    NullDbWriter,
+    NullDeviceService,
+    TimescaleDbWriter,
+    TimescaleDeviceService,
+)
 
 
 def parse_args(argv=None):
@@ -51,15 +57,34 @@ def _resolve_db_writer(no_db: bool):
         return NullDbWriter()
 
 
+def _resolve_device_service(no_db: bool):
+    """config + CLI 플래그 보고 DeviceService 결정. DbWriter 와 동일 정책."""
+    if no_db or not config.DB_ENABLED:
+        return NullDeviceService()
+    try:
+        return TimescaleDeviceService(
+            host=config.DB_HOST,
+            port=config.DB_PORT,
+            dbname=config.DB_NAME,
+            user=config.DB_USER,
+            password=config.DB_PASSWORD,
+        )
+    except Exception as e:
+        print(f"[worker] DeviceService unavailable ({type(e).__name__}: {e}) - falling back to NullDeviceService")
+        return NullDeviceService()
+
+
 def main() -> None:
     args = parse_args()
     db = _resolve_db_writer(no_db=args.no_db)
+    devices = _resolve_device_service(no_db=args.no_db)
     worker = MqttWorker(
         host=args.host,
         port=args.port,
         topic=args.topic,
         client_id=args.client_id,
         db=db,
+        devices=devices,
     )
     try:
         worker.start(block=True)
