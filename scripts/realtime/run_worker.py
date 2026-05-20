@@ -46,7 +46,8 @@ def _resolve_db_writer(no_db: bool):
         return writer
     except Exception as e:
         # psycopg 미설치 / DB 미기동 / 인증 실패 등 — 워커 자체는 살린다 (운영 안정성).
-        print(f"[worker] DB unavailable ({type(e).__name__}: {e}) — falling back to NullDbWriter")
+        # ASCII hyphen 사용 — Windows cp949 환경에서 em-dash 가 UnicodeEncodeError 유발.
+        print(f"[worker] DB unavailable ({type(e).__name__}: {e}) - falling back to NullDbWriter")
         return NullDbWriter()
 
 
