@@ -2,11 +2,20 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from models_core import config
+
+
+# 파일명 컴포넌트(prefix/dataset_key/asset_id) sanitize 용 allowlist.
+# alphanumeric + underscore + hyphen + dot 만 통과. 나머지(슬래시, ..,
+# NUL byte, Windows 금지 문자 :*?<>|" 등) 는 모두 _ 로 치환.
+_SAFE_SEGMENT_RE = re.compile(r"[^a-zA-Z0-9_.-]+")
+# 한 segment 최대 길이. Windows MAX_PATH 260 자 제약 + reports_dir prefix 여유.
+_MAX_SEGMENT_LEN = 64
 from services.schemas import (
     EvaluationResult,
     ExplanationResult,
@@ -203,11 +212,38 @@ class ReportService:
         return str(md_path), json_path_str
 
     @staticmethod
+    def _sanitize_segment(value: str, fallback: str) -> str:
+        """파일명 컴포넌트를 allowlist 로 정제.
+
+        - alphanumeric / _ / - / . 외 모든 문자는 _ 로 치환
+          (슬래시, .., NUL byte, Windows 금지 문자 :*?<>|" 등 일괄 제거).
+        - 시작/끝의 ./_ 제거 (.. 단독, 숨김파일화, dangling separator 방지).
+        - .. 가 토큰 형태로 남는 경우 추가 치환 (이중 안전망).
+        - 길이 제한으로 path 폭주 / FS 한계 회피.
+        - 빈 결과는 fallback 사용.
+        """
+        cleaned = _SAFE_SEGMENT_RE.sub("_", str(value)).strip("._")
+        if not cleaned:
+            return fallback
+        if ".." in cleaned:
+            cleaned = cleaned.replace("..", "_")
+        return cleaned[:_MAX_SEGMENT_LEN]
+
+    @staticmethod
     def _build_save_paths(prefix: str, dataset_key: str, asset_id: str) -> Tuple[Path, Path]:
-        reports_dir = Path(config.REPORT_DIR)
+        reports_dir = Path(config.REPORT_DIR).resolve()
         reports_dir.mkdir(parents=True, exist_ok=True)
-        safe_dataset = str(dataset_key).replace("/", "_").replace("\\", "_").strip() or "unknown"
-        safe_asset = str(asset_id).replace("/", "_").replace("\\", "_").strip() or "UNKNOWN"
+        safe_prefix  = ReportService._sanitize_segment(prefix,      "report")
+        safe_dataset = ReportService._sanitize_segment(dataset_key, "unknown")
+        safe_asset   = ReportService._sanitize_segment(asset_id,    "UNKNOWN")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        stem = f"{prefix}_{safe_dataset}_{safe_asset}_{timestamp}"
-        return reports_dir / f"{stem}.md", reports_dir / f"{stem}.json"
+        stem = f"{safe_prefix}_{safe_dataset}_{safe_asset}_{timestamp}"
+        md_path = reports_dir / f"{stem}.md"
+        json_path = reports_dir / f"{stem}.json"
+        # 이중 안전망: resolve() 후에도 reports_dir 자손이 아니면 외부 유출.
+        # sanitize 가 정상 동작했다면 절대 발생하지 않지만, regex 변경 등 미래의
+        # 회귀를 잡기 위해 명시적 가드.
+        for p in (md_path, json_path):
+            if not p.resolve().is_relative_to(reports_dir):
+                raise ValueError(f"report path traversal blocked: {p}")
+        return md_path, json_path
