@@ -32,4 +32,8 @@ jobs:
           ENABLE_LLM_STREAM: "0"
           # matplotlib headless backend (Tk 미설치 환경 대응)
           MPLBACKEND: "Agg"
-        run: pytest tests/test_smoke.py -v --tb=short
+        run: |
+          # test_smoke.py: 24 tests (Dash boot, ToolDispatcher, AnalyzeService lite, LlmService fallback).
+          # test_validation_step.py: 6 tests (InputValidationService — 외부 의존 0, CI 안전).
+          # 나머지 test_*_step.py 는 체크포인트(LSTM full mode) 또는 LLM API 키 의존이라 CI 제외.
+          pytest tests/test_smoke.py tests/test_validation_step.py -v --tb=short

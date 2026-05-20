@@ -193,7 +193,9 @@
 
 ## 4.2 현재 진행 중 (2026-05-20)
 - Tier 1 T1-01 ~ T1-04 완료 (실시간 워커 + 알람 + TimescaleDB + Grafana 2종 대시보드)
-- 다음: 외부 알람 채널 1종 도입 (Telegram / Email 중 택일), LLM 한국어 코멘트의 워커 통합
+- 외부 코드 리뷰 항목 #6 (Report path 경화) + #8 (CI 스코프 확장) 처리 완료
+- 외부 PRD 개선 보고서 B-1 (Grafana KMPRO 톤) + B-2 (Pain Point 프레이밍) + B-3 (overfit_score) 흡수 완료
+- 다음: **CMMS Tier 1.5** (설비 마스터 + 상태 머신 + 수리 워크플로 + 인증/권한) — Dash 강화 방향으로 진행
 
 ## 4.3 명시적 제외
 | 항목 | 이유 |
@@ -454,6 +456,31 @@ baseline (recall 0.706) 대비 **+3.7%p**. 목표 0.85+ 미달, variance 큼 (0.
 - Hydraulic 7-combo 앙상블 비교 — IF 단독 F1 0.915 가 모든 페어/트리오 fusion 대비 동급 이상
 - AI4I CNN recall variant — focal loss 강도 조정으로 recall +3.7%p (0.706 → 0.732), variance 크다는 부수 관찰 확보
 
+## 13.1.b Tier 1 회고 (2026-05-20) — 실시간 PdM 트랙
+
+학술 검증과 별개의 **운영 트랙** (T1-01 ~ T1-04 + 후속 보강).
+
+### 구현 완료
+| 작업 | 산출물 | 검증 |
+|---|---|---|
+| T1-01 MQTT 워커 | [services/realtime/mqtt_worker.py](services/realtime/mqtt_worker.py) — paho v2, DI 기반 | broker 무관 process_message smoke + 실 broker e2e |
+| T1-02 알람 Notifier | [services/realtime/notifier.py](services/realtime/notifier.py) — Protocol + StdoutNotifier 기본, 채널 pluggable | NotifyResult 4종 (SENT/FILTERED/RATE_LIMITED/FAILED) |
+| T1-03 TimescaleDB 저장 | [services/realtime/db_writer.py](services/realtime/db_writer.py) + [infra/timescaledb/init.sql](infra/timescaledb/init.sql) — 3 hypertable, 압축/보존 정책 | 72/72/72 + 90/90/90 row 적재 e2e |
+| T1-04 Grafana | [infra/grafana/dashboards/](infra/grafana/dashboards/) — Fleet Overview + Device Detail 2종 | datasource health OK, drill-down 동작 |
+| 보안 #6 | Report path 경화 — sanitize allowlist + REPORTS_DIR 자손 검증 | path traversal / 시스템 파일 read 모두 차단 |
+| 분석 B-3 | overfit_score 자동 로깅 ([scripts/training/train.py](scripts/training/train.py)) | metrics.json 에 자동 포함 (향후 학습부터) |
+| CI #8 | smoke.yml 에 test_validation_step.py 추가 | 6 tests 통과, 외부 의존 0 |
+
+### 발견된 회귀 (모두 수정 완료)
+1. **paho v2 ReasonCode TypeError** — int(reason_code) 가 TypeError. `.value` fallback 으로 v1/v2 양립. broker 없는 smoke 단계에서는 발현 안 되어 실 broker 첫 연결 시 발견.
+2. **psycopg 미설치 시 워커 사망** — fallback 메시지의 em-dash 가 Windows cp949 환경에서 UnicodeEncodeError 발생. NullDbWriter 로 살아남아야 하는 운영 안정성이 깨져 있었음. ASCII hyphen 으로 교체.
+3. **dcc.Store path injection 가능성** — 외부 노출 직전 발견, S5 에서 경화.
+
+### 의도적 미진행 (CMMS Tier 1.5 로 이관)
+- LLM 한국어 코멘트의 실시간 워커 통합 (현재 batch analyze_service 만 지원)
+- 익명 viewer + Grafana home dashboard 설정 (인증 통합 전 임시 우회 회피)
+- Tier 2 데이터셋 확장 (MIMII 등)
+
 ## 13.2 부분 검증 / 향후 작업
 - AI4I recall 0.85+ 목표 미달 — 클래스 reweighting + Optuna 탐색은 향후 작업
 - FD002 iTransformer 열세 원인 정밀 분석 (operating regime 별 잔차 분포)
@@ -472,8 +499,12 @@ baseline (recall 0.706) 대비 **+3.7%p**. 목표 0.85+ 미달, variance 큼 (0.
 | 14-1-b | **MQTT 실시간 워커 + Notifier** (T1-01, T1-02) | T1 | 1차 완료 (2026-05-19) — broker 무관 e2e 검증 |
 | **14-1-c** | **PostgreSQL + TimescaleDB 이력 저장** (T1-03) | T1 | 완료 (2026-05-20) |
 | **14-1-d** | **Grafana 대시보드** (T1-04) | T1 | 완료 (2026-05-20) — Fleet Overview + Device Detail 2종, drill-down 연동 |
-| 14-1-e | 외부 알람 채널 1종 도입 (Telegram / Email 중 택일) | T1 후속 | 채널 결정 후 |
-| 14-1-f | N-CMAPSS 학습 (선택) | — | 우선순위 낮음 |
+| 14-1-e | Report path 경화 (path traversal / 임의 파일 read 차단) | T1 후속 (보안) | 완료 (2026-05-20) — allowlist sanitize + REPORTS_DIR 자손 검증 |
+| 14-1-f | overfit_score 자동 로깅 (외부 PRD 개선 보고서 B-3 흡수) | T1 후속 (분석) | 완료 (2026-05-20) — train.py metrics dict 에 자동 포함 |
+| 14-1-g | CI 스코프 확장 (test_validation_step.py 추가) | T1 후속 (품질) | 완료 (2026-05-20) |
+| 14-1-h | 외부 알람 채널 1종 도입 (Telegram / Email 중 택일) | T1 후속 | 채널 결정 후 |
+| 14-1-i | CMMS Tier 1.5 (설비 마스터 + 상태 머신 + 수리 워크플로 + 인증/권한) | T1.5 (신규) | 설계 단계 — Dash 강화 방향 확정 (2026-05-20) |
+| 14-1-j | N-CMAPSS 학습 (선택) | — | 우선순위 낮음 |
 
 ## 14.2 중기 (3~6개월) — Tier 2 도입
 

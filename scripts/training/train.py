@@ -246,10 +246,25 @@ def _train_supervised(
 
     # best state 복원 (없으면 경고만)
     stopper.restore(model)
+
+    # B-3 (외부 PRD 개선 보고서 흡수): overfit_score — best epoch 의
+    # (val_loss - train_loss) / train_loss. PdM 에서 과적합은 현장 신뢰를
+    # 무너뜨리므로 학습 산출물에 명시적으로 남긴다.
+    #   · 음수 / 0 근처 : 정상 또는 약한 언더피팅
+    #   · 0.1 ~ 0.3    : 경미한 과적합
+    #   · 0.3 이상     : 위험 — 데이터 증강 / 정규화 / early stop patience 재검토
+    # 학습 재실행 없이도 다음 학습부터 metrics.json 에 자동 기록.
+    overfit_score: Optional[float] = None
+    if history and stopper.best_epoch > 0:
+        best_h = next((h for h in history if h["epoch"] == stopper.best_epoch), None)
+        if best_h is not None and best_h["train_loss"] > 1e-9:
+            overfit_score = (best_h["val_loss"] - best_h["train_loss"]) / best_h["train_loss"]
+
     return {
         "best_val": stopper.best_score,
         "best_epoch": stopper.best_epoch,
         "stopped_at": history[-1]["epoch"] if history else 0,
+        "overfit_score": overfit_score,
         "history": history,
     }
 
