@@ -45,7 +45,18 @@
 ## 1.2 한 줄 정의
 **스마트팩토리의 다종 설비를 하나의 플랫폼으로 통합하여, 상태를 사전 예측하고 고장 발생 전 운영자에게 한국어 의사결정 지원을 제공하는 전방위적 예지보전 시스템.**
 
-## 1.3 비즈니스 가치 제안
+## 1.3 시장 Pain Point — 본 시스템이 정조준하는 3대 문제
+
+2026년 한국 스마트팩토리 SME 가 PdM 도입에서 실제로 막히는 지점은 다음 셋이다. OmniPdM 의 모든 설계 결정은 이 3개를 직접 해소하기 위한 것이다.
+
+1. **숙련공 부족 — "고장 신호를 알아볼 수 있는 사람"의 절대 부족**
+   대응: 위험 등급 자동 분류(Critical/Warning/Advisory/Normal) + LLM 한국어 코멘트로 비숙련 운영자도 즉시 조치 가능.
+2. **블랙박스 AI — 현장이 이유 없이 울리는 알람을 신뢰하지 않음**
+   대응: XAI 기여도(Feature Importance / Attention) 를 모든 예측에 첨부 → "왜 위험한가" 가 알람과 같이 도착.
+3. **한국어 실무 갭 — 영어 논문/도구 중심, 현장 보고서 직결 미비**
+   대응: LLM 응답·UI 라벨·알람 본문 전부 한국어. 보고서는 그대로 사내 결재에 첨부 가능 수준.
+
+## 1.4 비즈니스 가치 제안
 
 > **"사람 투입 감소 + 지속 생산"을 추구하는 스마트팩토리 환경에서, 다양한 설비를 단일 플랫폼(Omni-)으로 통합 모니터링하여 고장 발생 후 수리 손해를 사전 예측으로 최소화한다.**
 
@@ -180,9 +191,9 @@
 | **OmniPdM 리브랜딩** (PRD v6.2 §0 브랜드 아이덴티티 신설) | 2026-05-19 |
 | **Tier 1 T1-01/T1-02 1차 구현** — MQTT 워커 + Notifier protocol + e2e smoke | 2026-05-19 |
 
-## 4.2 현재 진행 중 (2026-05-19)
-- T1-03 PostgreSQL + TimescaleDB 이력 저장 인프라 셋업 대기
-- T1-04 Grafana 대시보드 셋업 대기
+## 4.2 현재 진행 중 (2026-05-20)
+- Tier 1 T1-01 ~ T1-04 완료 (실시간 워커 + 알람 + TimescaleDB + Grafana 2종 대시보드)
+- 다음: 외부 알람 채널 1종 도입 (Telegram / Email 중 택일), LLM 한국어 코멘트의 워커 통합
 
 ## 4.3 명시적 제외
 | 항목 | 이유 |
@@ -333,8 +344,8 @@ baseline (recall 0.706) 대비 **+3.7%p**. 목표 0.85+ 미달, variance 큼 (0.
 |---|---|---|---|---|
 | T1-01 | **MQTT 시뮬레이터 + 실시간 워커** (Mosquitto + Python) | 3~4일 | 최상 | 완료 — paho-mqtt + DI worker, broker 무관 e2e 검증 |
 | T1-02 | **알람 시스템** (Critical 등급 발생 시, Notifier protocol) | 1일 | 최상 | 완료 — StdoutNotifier 기본, 채널 pluggable |
-| T1-03 | **PostgreSQL + TimescaleDB 이력 저장** | 2일 | 상 | 진행 예정 |
-| T1-04 | **Grafana 대시보드** (시계열 트렌드) | 2일 | 상 | 진행 예정 |
+| T1-03 | **PostgreSQL + TimescaleDB 이력 저장** | 2일 | 상 | 완료 — psycopg v3 + autocommit + 3 hypertable (telemetry/predictions/alerts) e2e 검증 |
+| T1-04 | **Grafana 대시보드** (Fleet Overview + Device Detail 2종) | 2일 | 상 | 완료 — datasource/dashboard provisioning 자동화, 색상 일관성, drill-down 연동 |
 
 ## 🥈 Tier 2 — 데이터 확장 + 신뢰성 (3~4주)
 
@@ -390,8 +401,8 @@ baseline (recall 0.706) 대비 **+3.7%p**. 목표 0.85+ 미달, variance 큼 (0.
 | FR-103 | Hydraulic 7-combo 앙상블 (Phase B-7) | 완료 (IF F1 0.915, 목표 0.90+ 달성) |
 | **FR-104** | **MQTT 실시간 워커** (T1-01) | 완료 (1차) — broker 무관 e2e 검증 |
 | **FR-105** | **알람 Notifier** (T1-02) | 완료 (1차) — Stdout 기본, 외부 채널 pluggable |
-| **FR-106** | **PostgreSQL 이력 저장** (T1-03) | 진행 예정 |
-| **FR-107** | **Grafana 대시보드** (T1-04) | 진행 예정 |
+| **FR-106** | **PostgreSQL 이력 저장** (T1-03) | 완료 — TimescaleDbWriter 통합, e2e 검증 |
+| **FR-107** | **Grafana 대시보드** (T1-04) | 완료 — Fleet Overview + Device Detail 2종 |
 | FR-108 | MIMII 데이터셋 추가 (T2-01) | 대기 (Tier 2) |
 | FR-109 | Evidently 드리프트 모니터링 (T2-03) | 대기 (Tier 2) |
 
@@ -459,8 +470,8 @@ baseline (recall 0.706) 대비 **+3.7%p**. 목표 0.85+ 미달, variance 큼 (0.
 |---|---|---|---|
 | 14-1-a | 학술 검증 마무리 (iT multi-seed, AI4I recall, Hydraulic 앙상블) | — | 완료 (2026-05-19) |
 | 14-1-b | **MQTT 실시간 워커 + Notifier** (T1-01, T1-02) | T1 | 1차 완료 (2026-05-19) — broker 무관 e2e 검증 |
-| **14-1-c** | **PostgreSQL + TimescaleDB 이력 저장** (T1-03) | T1 | 진행 예정 (다음 단계) |
-| **14-1-d** | **Grafana 대시보드** (T1-04) | T1 | 진행 예정 |
+| **14-1-c** | **PostgreSQL + TimescaleDB 이력 저장** (T1-03) | T1 | 완료 (2026-05-20) |
+| **14-1-d** | **Grafana 대시보드** (T1-04) | T1 | 완료 (2026-05-20) — Fleet Overview + Device Detail 2종, drill-down 연동 |
 | 14-1-e | 외부 알람 채널 1종 도입 (Telegram / Email 중 택일) | T1 후속 | 채널 결정 후 |
 | 14-1-f | N-CMAPSS 학습 (선택) | — | 우선순위 낮음 |
 
