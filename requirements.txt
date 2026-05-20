@@ -31,5 +31,10 @@ h5py>=3.10
 # T1-02 알람 채널은 stdout 기본. 외부 채널(Telegram/Email/Slack 등)을 붙일 때 해당 dep 추가.
 paho-mqtt>=2.1
 
+# Tier 1 — DbWriter (PRD v6.3 §10 T1-03). TimescaleDbWriter 사용 시 필수.
+# psycopg[binary] = libpq 자동 포함, Windows 에서도 추가 설치 없음.
+# NullDbWriter 로 갈 때는 미설치라도 동작 (db_writer 안 import 자체는 통과).
+psycopg[binary]>=3.2
+
 # Notebook-only (선택): seaborn 은 notebooks/* 에서만 사용. 학습/UI/워커 런타임 미사용.
 # 필요시: pip install seaborn>=0.13

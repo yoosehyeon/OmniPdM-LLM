@@ -32,6 +32,7 @@ import paho.mqtt.client as mqtt
 
 from models_core import config
 from services.pdm_service import PdmService
+from services.realtime.db_writer import DbWriter, NullDbWriter
 from services.realtime.notifier import Notifier, NotifyResult, StdoutNotifier
 from services.risk_service import RiskService
 
@@ -48,6 +49,9 @@ class WorkerStats:
     filtered: int = 0
     rate_limited: int = 0
     failed: int = 0
+    # DbWriter — 통합 후 별도 카운트 (writer 자체가 fail_count 보유하지만 워커 측 집계도 유지)
+    db_writes: int = 0
+    db_errors: int = 0
 
 
 class MqttWorker:
@@ -62,6 +66,7 @@ class MqttWorker:
         pdm: Optional[PdmService] = None,
         risk: Optional[RiskService] = None,
         notifier: Optional[Notifier] = None,
+        db: Optional[DbWriter] = None,
         host: Optional[str] = None,
         port: Optional[int] = None,
         topic: Optional[str] = None,
@@ -72,6 +77,9 @@ class MqttWorker:
         self.pdm = pdm if pdm is not None else PdmService(mode="lite", dataset_key="ai4i_cnn")
         self.risk = risk if risk is not None else RiskService(method="weighted")
         self.notifier: Notifier = notifier if notifier is not None else StdoutNotifier()
+        # DbWriter 기본은 NullDbWriter — 외부 DB 없이도 워커 동작. TimescaleDbWriter 는
+        # 호출자가 명시적으로 주입 (run_worker.py 가 config 보고 결정).
+        self.db: DbWriter = db if db is not None else NullDbWriter()
 
         self.host = host if host is not None else config.MQTT_HOST
         self.port = port if port is not None else config.MQTT_PORT
@@ -117,6 +125,13 @@ class MqttWorker:
             print(f"[MqttWorker] payload parse failed (device={device_id}): {e}", flush=True)
             return NotifyResult.FAILED
 
+        # 2.5 DB: telemetry 저장 (추론과 무관하게 raw 보존 — 파싱 통과만 하면 기록).
+        # DbWriter 실패는 워커 루프 죽이지 않음, _db_safe 가 내부에서 catch.
+        self._db_safe(
+            lambda: self.db.write_telemetry(device_id, self.pdm.dataset_key, sensors),
+            op="write_telemetry",
+        )
+
         # 3. 추론 → 위험 등급
         try:
             pred = self.pdm.predict(sensors)
@@ -130,6 +145,12 @@ class MqttWorker:
 
         self.stats.processed_ok += 1
 
+        # 3.5 DB: prediction 저장 (모든 정상 추론 보존 → Grafana 시계열 트렌드 소스)
+        self._db_safe(
+            lambda: self.db.write_prediction(device_id, self.pdm.dataset_key, pred, risk_result),
+            op="write_prediction",
+        )
+
         # 4. 알람 (필터/rate limit 은 Notifier 가 결정)
         try:
             result = self.notifier.notify(device_id, pred, risk_result)
@@ -138,6 +159,18 @@ class MqttWorker:
             self.stats.failed += 1
             print(f"[MqttWorker] notifier error (device={device_id}): {e}", flush=True)
             return NotifyResult.FAILED
+
+        # 4.5 DB: alert 발송 시도 결과 저장 (SENT/FILTERED/RATE_LIMITED/FAILED 모두 기록 → 감사 추적)
+        self._db_safe(
+            lambda: self.db.write_alert(
+                device_id=device_id,
+                dataset_key=self.pdm.dataset_key,
+                risk=risk_result,
+                channel=type(self.notifier).__name__,
+                notify_result=result.name,
+            ),
+            op="write_alert",
+        )
 
         # 5. 결과 카운터
         if result is NotifyResult.SENT:
@@ -150,6 +183,19 @@ class MqttWorker:
             self.stats.failed += 1
 
         return result
+
+    def _db_safe(self, fn, op: str) -> None:
+        """DbWriter 호출을 절대 외부로 누설하지 않는 wrapper.
+
+        DbWriter 자체 _execute 도 예외 catch 하지만, 여기서 한 번 더 가드해
+        Notifier 와 동일한 운영 안정성 보장.
+        """
+        try:
+            fn()
+            self.stats.db_writes += 1
+        except Exception as e:
+            self.stats.db_errors += 1
+            print(f"[MqttWorker] {op} failed: {type(e).__name__}: {e}", flush=True)
 
     def start(self, block: bool = True) -> None:
         """브로커 연결 + 구독 + 루프 시작.
@@ -183,15 +229,19 @@ class MqttWorker:
             client.loop_start()
 
     def stop(self) -> None:
-        """클라이언트 정리. start(block=False) 와 함께 사용."""
-        if self._client is None:
-            return
+        """클라이언트 정리. start(block=False) 와 함께 사용. DbWriter 도 함께 종료."""
+        if self._client is not None:
+            try:
+                self._client.loop_stop()
+            except Exception:
+                pass
+            try:
+                self._client.disconnect()
+            except Exception:
+                pass
+        # DB connection 정리 — start() 호출 안 했어도 안전 (NullDbWriter.close() = no-op).
         try:
-            self._client.loop_stop()
-        except Exception:
-            pass
-        try:
-            self._client.disconnect()
+            self.db.close()
         except Exception:
             pass
         self._client = None
@@ -200,8 +250,10 @@ class MqttWorker:
     # MQTT callbacks  (paho-mqtt v2 CallbackAPIVersion.VERSION2 시그니처)
     # ------------------------------------------------------------------
     def _on_connect(self, client: mqtt.Client, userdata: Any, flags: Any, reason_code: Any, properties: Any = None) -> None:
-        # paho v2: reason_code 는 ReasonCode 객체 (int 비교 가능).
-        if int(reason_code) == 0:
+        # paho v1: int / v2: ReasonCode 객체. int(ReasonCode) 는 TypeError 라 .value 사용.
+        # getattr fallback 으로 양쪽 모두 호환.
+        rc_value = getattr(reason_code, "value", reason_code)
+        if rc_value == 0:
             print(f"[MqttWorker] connected, subscribing topic='{self.topic}' qos={self.qos}", flush=True)
             client.subscribe(self.topic, qos=self.qos)
         else:
