@@ -322,5 +322,20 @@ if MQTT_QOS not in (0, 1, 2):
     raise ValueError(f"OMNIPDM_MQTT_QOS={MQTT_QOS} 는 0/1/2 중 하나여야 합니다.")
 
 
+# ---------------------------------------------------------------------------
+# 6) Tier 1 — TimescaleDB 이력 저장 — PRD v6.3 §10 T1-03
+# ---------------------------------------------------------------------------
+# docker-compose.yml 의 timescaledb 서비스와 짝. host loopback(127.0.0.1) 만 노출.
+# DB_ENABLED=false 이거나 psycopg 미설치 / DB 미기동 시 run_worker.py 가 NullDbWriter 로 fallback.
+
+DB_HOST     = _env_str("OMNIPDM_DB_HOST",     "127.0.0.1")
+DB_PORT     = _env_int("OMNIPDM_DB_PORT",     5432)
+DB_NAME     = _env_str("OMNIPDM_DB_NAME",     "omnipdm")
+DB_USER     = _env_str("OMNIPDM_DB_USER",     "omnipdm")
+DB_PASSWORD = _env_str("OMNIPDM_DB_PASSWORD", "omnipdm")
+# 명시적 disable — docker-compose 안 띄운 상태로도 워커 실행하고 싶을 때 false 로 두면 NullDbWriter 강제.
+DB_ENABLED  = _env_str("OMNIPDM_DB_ENABLED",  "true").lower() in ("1", "true", "yes", "on")
+
+
 # import 시점에 자동으로 시드를 고정한다.
 set_seed()

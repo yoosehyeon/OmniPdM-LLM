@@ -1,0 +1,79 @@
+# OmniPdM Tier 1 — PRD v6.3 §10 T1-03/T1-04 인프라.
+#
+# 서비스:
+#   timescaledb : Postgres 16 + TimescaleDB extension (이력 저장 + hypertable)
+#   grafana     : 대시보드 (T1-04 진입 시 활성화 — 현재 정의만, healthcheck 후 사용)
+#   mosquitto   : MQTT broker (T1-01 워커가 구독하는 broker. 로컬 PoC 용)
+#
+# 실행:
+#   docker compose up -d timescaledb        # DB 만
+#   docker compose up -d                    # 전체
+#   docker compose down -v                  # 정리 (볼륨까지 삭제)
+#
+# 데이터 영속성:
+#   timescaledb_data  : Postgres 데이터 디렉터리
+#   grafana_data      : Grafana 대시보드/설정
+#   mosquitto_data    : MQTT 메시지 (옵션)
+
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: omnipdm-timescaledb
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: omnipdm
+      POSTGRES_USER: omnipdm
+      # PoC 용 비밀번호. 운영 시 env 또는 secrets 로 교체.
+      POSTGRES_PASSWORD: omnipdm
+    ports:
+      # host loopback 만 노출 — 같은 머신 process(워커) 만 접속 가능, 네트워크 외부에서는 불가.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - timescaledb_data:/var/lib/postgresql/data
+      # init SQL: 컨테이너 최초 기동 시 1회 실행. hypertable 생성.
+      - ./infra/timescaledb/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U omnipdm -d omnipdm"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: omnipdm-mosquitto
+    restart: unless-stopped
+    ports:
+      # host loopback only — 같은 머신 worker/시뮬레이터만 접속 가능.
+      # 외부 노출 필요 시 mosquitto.conf 에 TLS+auth 추가 후 0.0.0.0 으로 변경.
+      - "127.0.0.1:1883:1883"
+    volumes:
+      - ./infra/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_log:/mosquitto/log
+
+  grafana:
+    image: grafana/grafana-oss:11.3.0
+    container_name: omnipdm-grafana
+    restart: unless-stopped
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    ports:
+      # host loopback only — 브라우저로 http://localhost:3000 접속 가능, 외부 차단.
+      - "127.0.0.1:3000:3000"
+    environment:
+      # PoC 용 기본 자격증명. 운영 시 교체 필수.
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      # provisioning: datasource + dashboard 자동 등록 (T1-04 단계에서 채움)
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+
+volumes:
+  timescaledb_data:
+  mosquitto_data:
+  mosquitto_log:
+  grafana_data:

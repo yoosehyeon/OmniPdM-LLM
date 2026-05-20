@@ -31,7 +31,9 @@
 | 한글 표기 | 옴니 피디엠 |
 | 풀네임 | OmniPdM — All-in-One PdM System |
 | 학술 인용 시 | OmniPdM (formerly HybridPdM) — 첫 등장에만 병기 |
-| 코드 / repo 디렉터리 | 당분간 `hybridpdm_gradio/` 유지 (히스토리 보존) — 신규 모듈만 `omnipdm` 네임스페이스 검토 |
+| GitHub 저장소 | `OmniPdM-LLM` (2026-05-19 `hybridpdm-LLM` → 이 이름으로 리네이밍, GitHub redirect 자동) |
+| 로컬 디렉터리 | `OmniPdM/` (2026-05-19 `hybridpdm_gradio` 에서 리네이밍) |
+| Python 패키지 네임스페이스 | `models_core`, `services`, `scripts` 그대로 유지 — 디렉터리/리포 이름과 무관 |
 
 ---
 
@@ -43,7 +45,18 @@
 ## 1.2 한 줄 정의
 **스마트팩토리의 다종 설비를 하나의 플랫폼으로 통합하여, 상태를 사전 예측하고 고장 발생 전 운영자에게 한국어 의사결정 지원을 제공하는 전방위적 예지보전 시스템.**
 
-## 1.3 비즈니스 가치 제안
+## 1.3 시장 Pain Point — 본 시스템이 정조준하는 3대 문제
+
+2026년 한국 스마트팩토리 SME 가 PdM 도입에서 실제로 막히는 지점은 다음 셋이다. OmniPdM 의 모든 설계 결정은 이 3개를 직접 해소하기 위한 것이다.
+
+1. **숙련공 부족 — "고장 신호를 알아볼 수 있는 사람"의 절대 부족**
+   대응: 위험 등급 자동 분류(Critical/Warning/Advisory/Normal) + LLM 한국어 코멘트로 비숙련 운영자도 즉시 조치 가능.
+2. **블랙박스 AI — 현장이 이유 없이 울리는 알람을 신뢰하지 않음**
+   대응: XAI 기여도(Feature Importance / Attention) 를 모든 예측에 첨부 → "왜 위험한가" 가 알람과 같이 도착.
+3. **한국어 실무 갭 — 영어 논문/도구 중심, 현장 보고서 직결 미비**
+   대응: LLM 응답·UI 라벨·알람 본문 전부 한국어. 보고서는 그대로 사내 결재에 첨부 가능 수준.
+
+## 1.4 비즈니스 가치 제안
 
 > **"사람 투입 감소 + 지속 생산"을 추구하는 스마트팩토리 환경에서, 다양한 설비를 단일 플랫폼(Omni-)으로 통합 모니터링하여 고장 발생 후 수리 손해를 사전 예측으로 최소화한다.**
 
@@ -178,9 +191,11 @@
 | **OmniPdM 리브랜딩** (PRD v6.2 §0 브랜드 아이덴티티 신설) | 2026-05-19 |
 | **Tier 1 T1-01/T1-02 1차 구현** — MQTT 워커 + Notifier protocol + e2e smoke | 2026-05-19 |
 
-## 4.2 현재 진행 중 (2026-05-19)
-- T1-03 PostgreSQL + TimescaleDB 이력 저장 인프라 셋업 대기
-- T1-04 Grafana 대시보드 셋업 대기
+## 4.2 현재 진행 중 (2026-05-20)
+- Tier 1 T1-01 ~ T1-04 완료 (실시간 워커 + 알람 + TimescaleDB + Grafana 2종 대시보드)
+- 외부 코드 리뷰 항목 #6 (Report path 경화) + #8 (CI 스코프 확장) 처리 완료
+- 외부 PRD 개선 보고서 B-1 (Grafana KMPRO 톤) + B-2 (Pain Point 프레이밍) + B-3 (overfit_score) 흡수 완료
+- 다음: **CMMS Tier 1.5** (설비 마스터 + 상태 머신 + 수리 워크플로 + 인증/권한) — Dash 강화 방향으로 진행
 
 ## 4.3 명시적 제외
 | 항목 | 이유 |
@@ -331,8 +346,8 @@ baseline (recall 0.706) 대비 **+3.7%p**. 목표 0.85+ 미달, variance 큼 (0.
 |---|---|---|---|---|
 | T1-01 | **MQTT 시뮬레이터 + 실시간 워커** (Mosquitto + Python) | 3~4일 | 최상 | 완료 — paho-mqtt + DI worker, broker 무관 e2e 검증 |
 | T1-02 | **알람 시스템** (Critical 등급 발생 시, Notifier protocol) | 1일 | 최상 | 완료 — StdoutNotifier 기본, 채널 pluggable |
-| T1-03 | **PostgreSQL + TimescaleDB 이력 저장** | 2일 | 상 | 진행 예정 |
-| T1-04 | **Grafana 대시보드** (시계열 트렌드) | 2일 | 상 | 진행 예정 |
+| T1-03 | **PostgreSQL + TimescaleDB 이력 저장** | 2일 | 상 | 완료 — psycopg v3 + autocommit + 3 hypertable (telemetry/predictions/alerts) e2e 검증 |
+| T1-04 | **Grafana 대시보드** (Fleet Overview + Device Detail 2종) | 2일 | 상 | 완료 — datasource/dashboard provisioning 자동화, 색상 일관성, drill-down 연동 |
 
 ## 🥈 Tier 2 — 데이터 확장 + 신뢰성 (3~4주)
 
@@ -388,8 +403,8 @@ baseline (recall 0.706) 대비 **+3.7%p**. 목표 0.85+ 미달, variance 큼 (0.
 | FR-103 | Hydraulic 7-combo 앙상블 (Phase B-7) | 완료 (IF F1 0.915, 목표 0.90+ 달성) |
 | **FR-104** | **MQTT 실시간 워커** (T1-01) | 완료 (1차) — broker 무관 e2e 검증 |
 | **FR-105** | **알람 Notifier** (T1-02) | 완료 (1차) — Stdout 기본, 외부 채널 pluggable |
-| **FR-106** | **PostgreSQL 이력 저장** (T1-03) | 진행 예정 |
-| **FR-107** | **Grafana 대시보드** (T1-04) | 진행 예정 |
+| **FR-106** | **PostgreSQL 이력 저장** (T1-03) | 완료 — TimescaleDbWriter 통합, e2e 검증 |
+| **FR-107** | **Grafana 대시보드** (T1-04) | 완료 — Fleet Overview + Device Detail 2종 |
 | FR-108 | MIMII 데이터셋 추가 (T2-01) | 대기 (Tier 2) |
 | FR-109 | Evidently 드리프트 모니터링 (T2-03) | 대기 (Tier 2) |
 
@@ -441,6 +456,31 @@ baseline (recall 0.706) 대비 **+3.7%p**. 목표 0.85+ 미달, variance 큼 (0.
 - Hydraulic 7-combo 앙상블 비교 — IF 단독 F1 0.915 가 모든 페어/트리오 fusion 대비 동급 이상
 - AI4I CNN recall variant — focal loss 강도 조정으로 recall +3.7%p (0.706 → 0.732), variance 크다는 부수 관찰 확보
 
+## 13.1.b Tier 1 회고 (2026-05-20) — 실시간 PdM 트랙
+
+학술 검증과 별개의 **운영 트랙** (T1-01 ~ T1-04 + 후속 보강).
+
+### 구현 완료
+| 작업 | 산출물 | 검증 |
+|---|---|---|
+| T1-01 MQTT 워커 | [services/realtime/mqtt_worker.py](services/realtime/mqtt_worker.py) — paho v2, DI 기반 | broker 무관 process_message smoke + 실 broker e2e |
+| T1-02 알람 Notifier | [services/realtime/notifier.py](services/realtime/notifier.py) — Protocol + StdoutNotifier 기본, 채널 pluggable | NotifyResult 4종 (SENT/FILTERED/RATE_LIMITED/FAILED) |
+| T1-03 TimescaleDB 저장 | [services/realtime/db_writer.py](services/realtime/db_writer.py) + [infra/timescaledb/init.sql](infra/timescaledb/init.sql) — 3 hypertable, 압축/보존 정책 | 72/72/72 + 90/90/90 row 적재 e2e |
+| T1-04 Grafana | [infra/grafana/dashboards/](infra/grafana/dashboards/) — Fleet Overview + Device Detail 2종 | datasource health OK, drill-down 동작 |
+| 보안 #6 | Report path 경화 — sanitize allowlist + REPORTS_DIR 자손 검증 | path traversal / 시스템 파일 read 모두 차단 |
+| 분석 B-3 | overfit_score 자동 로깅 ([scripts/training/train.py](scripts/training/train.py)) | metrics.json 에 자동 포함 (향후 학습부터) |
+| CI #8 | smoke.yml 에 test_validation_step.py 추가 | 6 tests 통과, 외부 의존 0 |
+
+### 발견된 회귀 (모두 수정 완료)
+1. **paho v2 ReasonCode TypeError** — int(reason_code) 가 TypeError. `.value` fallback 으로 v1/v2 양립. broker 없는 smoke 단계에서는 발현 안 되어 실 broker 첫 연결 시 발견.
+2. **psycopg 미설치 시 워커 사망** — fallback 메시지의 em-dash 가 Windows cp949 환경에서 UnicodeEncodeError 발생. NullDbWriter 로 살아남아야 하는 운영 안정성이 깨져 있었음. ASCII hyphen 으로 교체.
+3. **dcc.Store path injection 가능성** — 외부 노출 직전 발견, S5 에서 경화.
+
+### 의도적 미진행 (CMMS Tier 1.5 로 이관)
+- LLM 한국어 코멘트의 실시간 워커 통합 (현재 batch analyze_service 만 지원)
+- 익명 viewer + Grafana home dashboard 설정 (인증 통합 전 임시 우회 회피)
+- Tier 2 데이터셋 확장 (MIMII 등)
+
 ## 13.2 부분 검증 / 향후 작업
 - AI4I recall 0.85+ 목표 미달 — 클래스 reweighting + Optuna 탐색은 향후 작업
 - FD002 iTransformer 열세 원인 정밀 분석 (operating regime 별 잔차 분포)
@@ -457,10 +497,14 @@ baseline (recall 0.706) 대비 **+3.7%p**. 목표 0.85+ 미달, variance 큼 (0.
 |---|---|---|---|
 | 14-1-a | 학술 검증 마무리 (iT multi-seed, AI4I recall, Hydraulic 앙상블) | — | 완료 (2026-05-19) |
 | 14-1-b | **MQTT 실시간 워커 + Notifier** (T1-01, T1-02) | T1 | 1차 완료 (2026-05-19) — broker 무관 e2e 검증 |
-| **14-1-c** | **PostgreSQL + TimescaleDB 이력 저장** (T1-03) | T1 | 진행 예정 (다음 단계) |
-| **14-1-d** | **Grafana 대시보드** (T1-04) | T1 | 진행 예정 |
-| 14-1-e | 외부 알람 채널 1종 도입 (Telegram / Email 중 택일) | T1 후속 | 채널 결정 후 |
-| 14-1-f | N-CMAPSS 학습 (선택) | — | 우선순위 낮음 |
+| **14-1-c** | **PostgreSQL + TimescaleDB 이력 저장** (T1-03) | T1 | 완료 (2026-05-20) |
+| **14-1-d** | **Grafana 대시보드** (T1-04) | T1 | 완료 (2026-05-20) — Fleet Overview + Device Detail 2종, drill-down 연동 |
+| 14-1-e | Report path 경화 (path traversal / 임의 파일 read 차단) | T1 후속 (보안) | 완료 (2026-05-20) — allowlist sanitize + REPORTS_DIR 자손 검증 |
+| 14-1-f | overfit_score 자동 로깅 (외부 PRD 개선 보고서 B-3 흡수) | T1 후속 (분석) | 완료 (2026-05-20) — train.py metrics dict 에 자동 포함 |
+| 14-1-g | CI 스코프 확장 (test_validation_step.py 추가) | T1 후속 (품질) | 완료 (2026-05-20) |
+| 14-1-h | 외부 알람 채널 1종 도입 (Telegram / Email 중 택일) | T1 후속 | 채널 결정 후 |
+| 14-1-i | CMMS Tier 1.5 (설비 마스터 + 상태 머신 + 수리 워크플로 + 인증/권한) | T1.5 (신규) | 설계 단계 — Dash 강화 방향 확정 (2026-05-20) |
+| 14-1-j | N-CMAPSS 학습 (선택) | — | 우선순위 낮음 |
 
 ## 14.2 중기 (3~6개월) — Tier 2 도입
 

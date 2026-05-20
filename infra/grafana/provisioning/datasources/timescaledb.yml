@@ -1,0 +1,27 @@
+# OmniPdM Grafana datasource provisioning — PRD v6.3 §10 T1-04.
+#
+# 컨테이너 기동 시 Grafana 가 이 파일을 읽어 TimescaleDB(=Postgres) 를 자동 등록한다.
+# 수동 클릭 없이 docker compose up -d grafana 만으로 datasource UID=omnipdm-tsdb 사용 가능.
+#
+# 호스트명 `timescaledb` 는 docker-compose 서비스명 → 같은 compose network 내 DNS.
+# 컨테이너 외부에서 접속하는 게 아니므로 127.0.0.1 binding 과 무관.
+
+apiVersion: 1
+
+datasources:
+  - name: TimescaleDB
+    uid: omnipdm-tsdb
+    type: postgres
+    access: proxy
+    url: timescaledb:5432
+    user: omnipdm
+    database: omnipdm
+    secureJsonData:
+      # PoC 기본 비밀번호. 운영 시 환경변수/secrets 로 분리.
+      password: omnipdm
+    jsonData:
+      sslmode: disable
+      postgresVersion: 1600
+      timescaledb: true
+    isDefault: true
+    editable: false

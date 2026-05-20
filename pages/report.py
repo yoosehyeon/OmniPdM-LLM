@@ -18,6 +18,25 @@ dash.register_page(__name__, path="/reports", name="Report", order=6)
 REPORTS_DIR: Path = config.REPORT_DIR
 
 
+def _is_within_reports_dir(p: Path, allowed_suffixes: tuple[str, ...] = (".md", ".json")) -> bool:
+    """dcc.Store 에서 받은 경로가 REPORTS_DIR 자손인지 + 허용 확장자인지 검증.
+
+    Store 값은 클라이언트가 임의 조작 가능하므로 신뢰할 수 없다. 검증 없이
+    Path(...).read_text() 하면 임의 파일 노출 (e.g. /etc/passwd, C:/Windows/...).
+    resolve() 로 심볼릭/상대경로 우회까지 정규화 후 is_relative_to 로 escape 차단.
+    """
+    try:
+        resolved = p.resolve()
+    except (OSError, ValueError):
+        return False
+    if resolved.suffix.lower() not in allowed_suffixes:
+        return False
+    try:
+        return resolved.is_relative_to(REPORTS_DIR.resolve())
+    except ValueError:
+        return False
+
+
 def _scan_reports() -> List[Dict[str, Any]]:
     if not REPORTS_DIR.exists():
         return []
@@ -133,13 +152,19 @@ def render_selected(selected_rows, paths):
         return no_update, no_update
 
     md_path = Path(paths[idx])
+    # dcc.Store 값은 클라이언트가 조작 가능 — REPORTS_DIR 자손 + .md 만 허용.
+    # 통과 못 하면 임의 파일 노출 시도로 간주 → user-facing 메시지만, 서버 측에 로그.
+    if not _is_within_reports_dir(md_path, allowed_suffixes=(".md",)):
+        return "*잘못된 보고서 경로*", "*잘못된 보고서 경로*"
     if not md_path.exists():
         return "*파일을 찾을 수 없습니다*", "*파일을 찾을 수 없습니다*"
 
     md_content = md_path.read_text(encoding="utf-8")
 
     json_path = md_path.with_suffix(".json")
-    if json_path.exists():
+    # json_path 도 동일 가드 — md_path 가 검증을 통과했어도 with_suffix 결과는
+    # 별도 검증 (방어적 — 향후 _scan_reports 변경 시 회귀 방지).
+    if json_path.exists() and _is_within_reports_dir(json_path, allowed_suffixes=(".json",)):
         try:
             data = json.loads(json_path.read_text(encoding="utf-8"))
             json_content = json.dumps(data, ensure_ascii=False, indent=2)

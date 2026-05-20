@@ -1,0 +1,27 @@
+# OmniPdM Grafana dashboard provider — PRD v6.3 §10 T1-04.
+#
+# /var/lib/grafana/dashboards 디렉터리의 .json 파일을 자동 import.
+# updateIntervalSeconds 마다 polling 방식으로 파일 변경 감지 → 반영
+# (Grafana 는 watcher 자동 전환이 없으며 항상 polling).
+#
+# 현재 값은 PoC/dev 단계 기준. 운영 진입 시 다음 항목들을 전환하는 게 표준:
+#   updateIntervalSeconds: 10 → 30  (polling IO 부하 완화)
+#   allowUiUpdates       : true → false  (UI 편집 차단 → JSON = Single Source of Truth)
+#   disableDeletion      : false → true  (실수 삭제 보호. 현재는 git tracked 이라 복원 가능)
+#
+# 단일 폴더 정책: foldersFromFilesStructure=false + folder=OmniPdM 조합으로
+# 디렉터리 구조 무시하고 모든 dashboard 를 OmniPdM 폴더 하나에 모은다.
+
+apiVersion: 1
+
+providers:
+  - name: OmniPdM
+    orgId: 1
+    folder: OmniPdM
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

@@ -40,6 +40,7 @@ class PdmService:
         self._torch_model = None
         self._sk_model = None
         self._meta: Dict[str, Any] = {}
+        self._input_scaler = None  # 추론 시 학습과 동일한 StandardScaler — 1회 lazy fit, _get_input_scaler 참조
 
         if self.mode == "full":
             self._load_model()
@@ -190,21 +191,33 @@ class PdmService:
     def _find_checkpoint(self, stem: str, suffix: str) -> Path:
         """체크포인트 경로 해결.
 
-        1) 로컬 `config.CHECKPOINT_DIR` 에 `{stem}*{suffix}` 가 있으면 최신 파일 사용 (개발 환경).
-        2) 없으면 HF Model Hub (`config.CHECKPOINT_REPO`) 에서 download 후 캐시 경로 반환.
+        1) 로컬 `config.CHECKPOINT_DIR` 에서 정확히 `{stem}_<digits>...` 패턴만 매칭.
+           예: stem="ai4i_cnn" 일 때 `ai4i_cnn_recall_*.pt` 같은 longer-stem 변형은 제외하기 위해
+           `_` 직후 첫 글자가 숫자(timestamp 시작) 여야 한다.
+        2) 없으면 HF Model Hub (`config.CHECKPOINT_REPO`) 에서 동일 규칙으로 매칭 후 download.
            동일 stem 의 `_meta.json` 도 함께 pull 해 `_load_checkpoint_meta()` 가 읽을 수 있게 한다.
         """
+        prefix = f"{stem}_"
+
+        def _is_exact_stem_match(name: str) -> bool:
+            """name 이 '{stem}_<digit>...{suffix}' 형태인지."""
+            if not name.startswith(prefix) or not name.endswith(suffix):
+                return False
+            tail = name[len(prefix):]
+            return len(tail) > 0 and tail[0].isdigit()
+
         if config.CHECKPOINT_DIR.exists():
-            local = sorted(config.CHECKPOINT_DIR.glob(f"{stem}*{suffix}"))
+            local = sorted(
+                p for p in config.CHECKPOINT_DIR.glob(f"{stem}_*{suffix}")
+                if _is_exact_stem_match(p.name)
+            )
             if local:
                 return local[-1]
 
         from huggingface_hub import hf_hub_download, list_repo_files
 
         all_files = list_repo_files(config.CHECKPOINT_REPO, repo_type="model")
-        matches = sorted(
-            f for f in all_files if f.startswith(f"{stem}_") and f.endswith(suffix)
-        )
+        matches = sorted(f for f in all_files if _is_exact_stem_match(f))
         if not matches:
             raise FileNotFoundError(
                 f"No checkpoint for {stem}{suffix} in {config.CHECKPOINT_REPO}"
@@ -280,7 +293,14 @@ class PdmService:
     # Full mode: AI4I CNN
     # ------------------------------------------------------------------
     def _predict_ai4i_cnn(self, payload: Dict[str, float]) -> PredictionResult:
-        x = self._build_ai4i_feature_vector(payload)
+        x = self._build_ai4i_feature_vector(payload)  # raw (11,) — 학습 시 StandardScaler 적용 전 형태
+
+        # 학습 시 _fit_apply_scaler_2d 가 train 분할로 fit 한 StandardScaler 를 동일하게 적용해야
+        # 모델 입력 분포가 학습과 일치한다. lazy fit + 인스턴스 캐시.
+        scaler = self._get_input_scaler()
+        if scaler is not None:
+            x = scaler.transform(x.reshape(1, -1)).reshape(-1).astype(np.float32)
+
         x = x[None, None, :]  # (1, 1, 11)
 
         with torch.no_grad():
@@ -395,7 +415,15 @@ class PdmService:
         raw_pred = float(output.view(-1)[0].item())
 
         rul_clip = self._get_rul_clip(dataset_key)
-        rul_value = max(0.0, raw_pred)
+
+        # 학습 시 타깃을 [0, 1] 로 정규화한 경우 (meta["rul_norm"]=True) 모델 출력도 [0, 1] 단위.
+        # 정규화 안 한 경우 (cmapss 기본) 출력은 0 ~ rul_clip cycles.
+        # 두 경우를 동일하게 다루기 위해 cycles 스케일로 통일한 뒤 rul_norm 을 계산한다.
+        # evaluate.py:392 의 역정규화 패턴과 동일 정책.
+        if bool(self._meta.get("rul_norm", False)):
+            rul_value = max(0.0, raw_pred) * float(rul_clip)  # [0,1] -> cycles
+        else:
+            rul_value = max(0.0, raw_pred)                    # already cycles
         rul_norm = min(1.0, rul_value / float(rul_clip))
 
         # failure probability를 RUL 부족 정도로 근사
@@ -475,6 +503,11 @@ class PdmService:
                 f"{expected_hint}"
             )
 
+        # 학습 시 sequence 도 (N*L, F) 통계로 StandardScaler fit → 추론에 동일 적용 (분포 일치).
+        scaler = self._get_input_scaler()
+        if scaler is not None:
+            arr = scaler.transform(arr).astype(np.float32)
+
         # (L, F) -> (F, L)
         arr = arr.transpose(1, 0)
 
@@ -483,6 +516,33 @@ class PdmService:
 
         x_t = torch.as_tensor(arr, dtype=torch.float32, device=self.device)
         return x_t
+
+    def _get_input_scaler(self):
+        """학습 시 사용한 StandardScaler 를 lazy 로드 + 인스턴스 캐시.
+
+        구현: data_pipeline LOADER 를 1회 호출해 dict["scaler"] 를 받는다.
+        LOADER 가 scaler 를 반환하지 않거나 dataset 미등록이면 None — 호출자는
+        scaler 없이 raw 값을 그대로 사용 (기존 동작 보존).
+
+        성능: 첫 호출 시 데이터 파일 I/O 비용 1회 발생. 이후는 캐시 hit.
+        """
+        if self._input_scaler is not None:
+            return self._input_scaler
+        try:
+            from models_core.data_pipeline import LOADERS
+        except ImportError:
+            return None
+        loader = LOADERS.get(self.dataset_key)
+        if loader is None:
+            return None
+        try:
+            data = loader()
+        except Exception:
+            # 데이터 파일 미존재 / 손상 등으로 fit 실패 시 raw 동작으로 fallback.
+            return None
+        scaler = data.get("scaler") if isinstance(data, dict) else None
+        self._input_scaler = scaler
+        return scaler
 
     def _get_rul_clip(self, dataset_key: str) -> float:
         if dataset_key == "ncmapss_lstm":
