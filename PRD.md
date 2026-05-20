@@ -638,6 +638,36 @@ export OMNIPDM_AUTH_REQUIRED=false
 
 **다음 단계 (P1-c, 예상 2~3h)**: `services/auth/sessions.py` 에 `role_required` 데코레이터 본문 활성화 + `services/realtime/device_service.scope_required` placeholder 와 통합. 기존 Dash 페이지 callback 에 부착.
 
+### T1.5 P1-c 구현 완료 (2026-05-21) — `role_required` RBAC + cookie 보안 + 403 페이지
+
+**설계 결정 4건**:
+1. admin 통과 정책: **admin 항상 통과** (super-user 표준 패턴)
+2. 미인증 처리: `before_request` 가 이미 redirect, 안전망으로 **401 → blueprint errorhandler 가 `/login` redirect**
+3. 권한 부족 응답: **403 + 간단 Bootstrap HTML 페이지** (login 과 일관 테마)
+4. `device_service.scope_required` 와 관계: **별도 유지** (scope_required = 데이터 범위 필터링, role_required = 역할 검사 — 의미 다름)
+
+| 산출물 | 비고 |
+|---|---|
+| [services/auth/sessions.py](services/auth/sessions.py) | `role_required(*roles)` 데코레이터 + `set_user_service_for_rbac` / `_get_rbac_user_service` 모듈 변수 DI. admin 무조건 통과, DB 에서 user 사라지면 session 정리 후 401 |
+| [services/auth/routes.py](services/auth/routes.py) | `init_auth_blueprint` 가 `set_user_service_for_rbac` 도 자동 호출 (한 곳에서 일관 주입). admin-only stub `/admin/health-check` 추가. `bp.app_errorhandler(401)` → `/login?next=/` redirect, `bp.app_errorhandler(403)` → Bootstrap HTML |
+| [services/auth/__init__.py](services/auth/__init__.py) | `role_required` + `set_user_service_for_rbac` export |
+| [app.py](app.py) | OWASP 기본 cookie 보안 — `SESSION_COOKIE_HTTPONLY=True`, `SESSION_COOKIE_SAMESITE="Lax"`, `SESSION_COOKIE_SECURE=$OMNIPDM_SESSION_COOKIE_SECURE` (PoC dev 는 OFF, 운영 진입 시 ON) |
+| [tests/test_auth_sessions.py](tests/test_auth_sessions.py) | RBAC 5개 추가 (admin 통과, operator 403, 미인증 redirect, decorator ValueError, user 사라짐 401). fixture 가 `routes._user_service` + `sessions._rbac_user_service` 둘 다 mock 주입 |
+
+**진단된 버그 (작업 중 발견 + 즉시 수정)**:
+fixture 가 `routes._user_service` 만 mock 으로 바꾸고 `sessions._rbac_user_service` 는 `NullUserService` 그대로 두는 바람에 RBAC 테스트가 `get_user → None → abort(401) → /login` 로 빠짐. 수정: fixture 에서 `auth_sessions.set_user_service_for_rbac(mock_users)` 호출 추가.
+
+**외부 리뷰 흡수 (P1-c 작성 중 14건 평가 → 1건 채택)**:
+- 채택: OWASP cookie 기본 보안 (`HTTPONLY` / `SAMESITE` / `SECURE` env-toggle)
+- 거부 (5명+ migration 시점 항목 — PoC 범위 밖): Bootstrap 5.3.0→5.3.8 (SRI hash 검증 불가), Jinja2 template 마이그레이션, Flask-Limiter rate limiting, Flask-Session server-side migration, `BeautifulSoup` CSRF 추출 (의존성), `monkeypatch` fixture (작동 코드에 변경 비용 > 가치), parametrized test, audit mock 호출 검증, session idle timeout, CSRF 다른 endpoint 확대 — 모두 명시적으로 "5명+ 시점" 미래 작업
+
+**검증 결과**:
+- `pytest tests/test_auth_sessions.py -v` → **19 passed** (P1-b 의 14 + 신규 5)
+- `pytest tests/` → **67 passed, 4 skipped, 0 failed** (P1-b 의 62 + 신규 5)
+- Skipped 4개는 `tests/realtime/test_device_service.py::TestDeviceServiceIntegration` 의 실 TimescaleDB 통합 테스트 — `OMNIPDM_TEST_DB_URL` 환경변수 설정 시 실행, 미설정 시 자동 skip (CI smoke 외부 의존 0 정책)
+
+**다음 단계 (P1-d, 예상 1~1.5d)**: Dash devices / maintenance_orders 페이지 — `DeviceService` 와 `MaintenanceOrderService` (신규) 통합. 페이지마다 `role_required` 부착으로 admin/operator 분리.
+
 ## 13.2 부분 검증 / 향후 작업
 - AI4I recall 0.85+ 목표 미달 — 클래스 reweighting + Optuna 탐색은 향후 작업
 - FD002 iTransformer 열세 원인 정밀 분석 (operating regime 별 잔차 분포)

@@ -1,4 +1,4 @@
-"""Flask session 기반 인증 헬퍼 — Tier 1.5 P1-b.
+"""Flask session 기반 인증 헬퍼 — Tier 1.5 P1-b/P1-c.
 
 설계:
 - Flask-Login 도입 비용 회피 (PoC 단일 사용자). Flask 표준 `session` dict 직접 사용.
@@ -11,13 +11,20 @@ CSRF (login 폼):
 - session 에 csrf_token 저장 + 폼 hidden input 으로 회수 → 검증.
 - 다른 form 이 없으므로 Flask-WTF 도입 불요 (T1.5 P1-b 결정).
 
+RBAC (P1-c):
+- role_required(*roles) 데코레이터 — Flask route 보호용 (T1.5 결정 #5: 3-role hard-coded).
+- admin 은 항상 통과 (super-user 표준).
+- 미인증은 before_request 가 이미 redirect 처리 — 안전망으로 401 반환.
+- 권한 부족은 403 + 간단 HTML 페이지.
+
 future migration: 사용자 5명+ 시점에 Flask-Login + Flask-WTF 검토 (PRD §13.1.b 후속 메모).
 """
 
 from __future__ import annotations
 
 import secrets
-from typing import Any, Optional
+from functools import wraps
+from typing import Any, Callable, Optional
 
 from flask import session
 
@@ -141,6 +148,79 @@ def current_user(user_service: UserService) -> Optional[User]:
 def is_authenticated() -> bool:
     """before_request 가드용 — DB 조회 없이 session 만 확인."""
     return _SESSION_USER_KEY in session
+
+
+# ---------------------------------------------------------------------------
+# RBAC — role_required (T1.5 P1-c)
+# ---------------------------------------------------------------------------
+# admin 은 모든 role_required 통과. super-user 표준 패턴.
+_ADMIN_ROLE = "admin"
+
+
+def role_required(*allowed_roles: str) -> Callable:
+    """Flask route 보호 데코레이터. 호출자의 user role 이 allowed_roles 중 하나여야 통과.
+
+    동작:
+    - 미인증: before_request 가 이미 redirect 처리하지만 안전망으로 401.
+    - DB 에서 user 사라짐 / 비활성: 401 (current_user 가 None).
+    - role 불일치: 403 + 간단 HTML (Flask 의 abort 가 routes.py 의 errorhandler 로 처리).
+    - admin 은 무조건 통과.
+
+    UserService 의존성 주입: routes.init_auth_blueprint() 가 set_user_service_for_rbac
+    로 등록한 instance 사용. 테스트는 직접 호출로 mock 주입 가능.
+
+    사용 예:
+        @bp.route("/admin/audit-log")
+        @role_required("admin", "operator")
+        def view_audit(): ...
+    """
+    if not allowed_roles:
+        raise ValueError("role_required requires at least one role")
+
+    def decorator(fn: Callable) -> Callable:
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            from flask import abort  # 지연 import — 모듈 import 비용 회피
+
+            user_id = current_user_id()
+            if not user_id:
+                abort(401)
+
+            user_service = _get_rbac_user_service()
+            if user_service is None:
+                # service 가 주입 안 됨 — 운영 사고. 안전한 쪽 (거부) 으로.
+                abort(503)
+
+            user = user_service.get_user(user_id)
+            if user is None:
+                # session 에는 있지만 DB 에서 사라짐 — session 정리 후 401.
+                session.pop(_SESSION_USER_KEY, None)
+                abort(401)
+
+            if user.role == _ADMIN_ROLE or user.role in allowed_roles:
+                return fn(*args, **kwargs)
+            abort(403)
+
+        return wrapper
+
+    return decorator
+
+
+# module-level UserService — routes.py 의 _user_service 와 동기화 (init_auth_blueprint 가 설정).
+_rbac_user_service: Optional[UserService] = None
+
+
+def set_user_service_for_rbac(user_service: Optional[UserService]) -> None:
+    """role_required 데코레이터가 사용할 UserService 주입.
+
+    routes.init_auth_blueprint() 가 자동 호출. 테스트는 mock 으로 직접 호출 가능.
+    """
+    global _rbac_user_service
+    _rbac_user_service = user_service
+
+
+def _get_rbac_user_service() -> Optional[UserService]:
+    return _rbac_user_service
 
 
 # ---------------------------------------------------------------------------

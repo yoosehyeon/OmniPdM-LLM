@@ -77,10 +77,14 @@ def client():
     import app as app_module
     importlib.reload(app_module)  # before_request 가드 재등록
 
-    # blueprint 의 module-level _user_service 를 mock 으로 교체.
+    # blueprint 의 module-level _user_service 와 role_required 의 _rbac_user_service
+    # 둘 다 mock 으로 교체. init_auth_blueprint 가 NullUserService 를 RBAC 에 주입한 상태를 덮어씀.
     from services.auth import routes
-    routes._user_service = _MockUserService({"alice": "wonderland", "admin": "adminpass"})
+    from services.auth import sessions as auth_sessions
+    mock_users = _MockUserService({"alice": "wonderland", "admin": "adminpass"})
+    routes._user_service = mock_users
     routes._audit_conn_provider = lambda: None  # audit 비활성
+    auth_sessions.set_user_service_for_rbac(mock_users)
 
     flask_app = app_module.server
     flask_app.config["TESTING"] = True
@@ -241,3 +245,63 @@ class TestLogout:
         # logout 후 다시 protected 접근 → redirect.
         r_out = client.get("/")
         assert r_out.status_code == 302
+
+
+# ---------------------------------------------------------------------------
+# RBAC — role_required (P1-c)
+# ---------------------------------------------------------------------------
+def _login_as(client, user_id: str, password: str) -> None:
+    """헬퍼: 주어진 사용자로 로그인. CSRF token 처리 포함."""
+    r1 = client.get("/login")
+    csrf = _extract_csrf(r1.get_data(as_text=True))
+    r = client.post(
+        "/login",
+        data={"user_id": user_id, "password": password, "csrf_token": csrf},
+    )
+    assert r.status_code == 302, f"login failed for {user_id}: {r.status_code}"
+
+
+class TestRoleRequired:
+    def test_admin_can_access_admin_route(self, client):
+        _login_as(client, "admin", "adminpass")
+        r = client.get("/admin/health-check")
+        assert r.status_code == 200
+        assert r.json["role_check"] == "admin"
+
+    def test_operator_cannot_access_admin_route(self, client):
+        # alice 는 operator role — admin 전용 라우트에서 403.
+        _login_as(client, "alice", "wonderland")
+        r = client.get("/admin/health-check")
+        assert r.status_code == 403
+        # 403 페이지가 Bootstrap HTML 로 렌더링되는지 간단 확인.
+        body = r.get_data(as_text=True)
+        assert "403 Forbidden" in body
+        assert "permission" in body.lower()
+
+    def test_unauthenticated_admin_route_redirects(self, client):
+        # 로그인 안 한 상태로 admin 라우트 접근 → before_request 가 /login 으로.
+        r = client.get("/admin/health-check")
+        assert r.status_code == 302
+        assert "/login" in r.headers["Location"]
+
+
+class TestRoleRequiredDecorator:
+    """role_required 데코레이터 자체의 단위 동작."""
+
+    def test_decorator_requires_at_least_one_role(self):
+        from services.auth.sessions import role_required
+        with pytest.raises(ValueError):
+            role_required()
+
+    def test_session_cleared_when_user_disappears(self, client):
+        # 로그인 후 mock UserService 에서 사용자 삭제 → 다음 요청에서 401 → /login redirect.
+        _login_as(client, "alice", "wonderland")
+
+        # mock UserService 에서 alice 제거
+        from services.auth import routes
+        routes._user_service._users.pop("alice", None)
+
+        # admin 라우트 접근 → role_required 가 get_user(alice) None 받으면 401 → /login.
+        r = client.get("/admin/health-check")
+        assert r.status_code == 302
+        assert "/login" in r.headers["Location"]

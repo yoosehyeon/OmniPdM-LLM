@@ -89,6 +89,16 @@ def create_app() -> Dash:
     server = app.server  # Flask app
     server.secret_key = config.SECRET_KEY
 
+    # OWASP Session Management — cookie 보안 기본값.
+    # SECURE 는 HTTPS 전용이라 PoC dev (http://localhost) 에서는 OFF.
+    # 운영 진입 시 OMNIPDM_SESSION_COOKIE_SECURE=true 로 강제.
+    cookie_secure = os.getenv("OMNIPDM_SESSION_COOKIE_SECURE", "false").lower() in ("1", "true", "yes", "on")
+    server.config.update(
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE="Lax",
+        SESSION_COOKIE_SECURE=cookie_secure,
+    )
+
     # ----------------------------------------------------------------------
     # Auth blueprint + before_request guard (Tier 1.5 P1-b)
     # ----------------------------------------------------------------------

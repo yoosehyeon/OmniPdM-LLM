@@ -20,7 +20,9 @@ from services.auth.sessions import (
     login_user,
     logout_user,
     record_login_failure,
+    role_required,
     rotate_csrf_token,
+    set_user_service_for_rbac,
     verify_csrf_token,
 )
 from services.auth.users import (
@@ -43,7 +45,7 @@ __all__ = [
     "NullUserService",
     "TimescaleUserService",
     "create_default_user_service",
-    # sessions
+    # sessions + RBAC
     "current_user",
     "current_user_id",
     "get_or_create_csrf_token",
@@ -51,6 +53,8 @@ __all__ = [
     "login_user",
     "logout_user",
     "record_login_failure",
+    "role_required",
     "rotate_csrf_token",
+    "set_user_service_for_rbac",
     "verify_csrf_token",
 ]

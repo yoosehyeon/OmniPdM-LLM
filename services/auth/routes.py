@@ -21,6 +21,7 @@ from urllib.parse import urlparse
 from flask import Blueprint, redirect, request
 
 from services.auth import sessions
+from services.auth.sessions import role_required, set_user_service_for_rbac
 from services.auth.users import UserService
 
 
@@ -43,10 +44,13 @@ def init_auth_blueprint(
 
     audit_conn_provider: 매 호출 시 psycopg.Connection 또는 None 을 반환하는 callable.
                         None 이면 audit_log 호출 자체 skip.
+
+    role_required 데코레이터가 사용할 UserService 도 함께 등록 — 한 곳에서 일관 주입.
     """
     global _user_service, _audit_conn_provider
     _user_service = user_service
     _audit_conn_provider = audit_conn_provider
+    set_user_service_for_rbac(user_service)
     return bp
 
 
@@ -156,3 +160,58 @@ def logout():
     audit_conn = _audit_conn_provider() if _audit_conn_provider else None
     sessions.logout_user(audit_conn=audit_conn)
     return redirect("/login")
+
+
+# ---------------------------------------------------------------------------
+# Admin-only stub — role_required 데코레이터 데모. P1-d 의 admin UI 진입 전 안전망.
+# ---------------------------------------------------------------------------
+@bp.route("/admin/health-check")
+@role_required("admin")
+def admin_health_check():
+    """admin 만 접근 가능한 단순 health-check. RBAC 동작 확인용 stub.
+
+    P1-d 의 maintenance_orders / users 관리 UI 가 들어오기 전 placeholder.
+    """
+    return {"status": "ok", "role_check": "admin"}, 200
+
+
+# ---------------------------------------------------------------------------
+# Error handlers — 401/403 간단 페이지. abort(401/403) 에서 자동 호출.
+# blueprint app_errorhandler 는 app 전체에 적용 — Flask 공식 권장 방식.
+# ---------------------------------------------------------------------------
+def _render_forbidden_page(status_label: str, message: str) -> str:
+    return f"""<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <title>OmniPdM - {status_label}</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light">
+  <div class="container" style="max-width: 480px; margin-top: 80px;">
+    <div class="card shadow-sm">
+      <div class="card-body text-center">
+        <h4 class="card-title mb-3">{status_label}</h4>
+        <p class="text-muted">{message}</p>
+        <a class="btn btn-primary mt-2" href="/">Back to dashboard</a>
+        <a class="btn btn-outline-secondary mt-2 ms-2" href="/logout">Sign out</a>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
+"""
+
+
+@bp.app_errorhandler(401)
+def _handle_401(_err):
+    # before_request 가 보통 가로채지만, role_required 에서 abort(401) 시 도달.
+    return redirect("/login?next=/"), 302
+
+
+@bp.app_errorhandler(403)
+def _handle_403(_err):
+    return _render_forbidden_page(
+        "403 Forbidden",
+        "You do not have permission to access this page.",
+    ), 403
