@@ -158,7 +158,7 @@ def load_ai4i_cnn() -> Dict:
     y = df["Machine failure"].values.astype(np.float32)
 
     X_tr, y_tr, X_va, y_va, X_te, y_te = _split_train_val_test(X, y, stratify=y)
-    _, (X_tr, X_va, X_te) = _fit_apply_scaler_2d(X_tr, X_va, X_te)
+    scaler, (X_tr, X_va, X_te) = _fit_apply_scaler_2d(X_tr, X_va, X_te)
 
     # 채널 차원 추가: (N, 11) → (N, 1, 11)
     X_tr = X_tr[:, None, :]
@@ -169,6 +169,7 @@ def load_ai4i_cnn() -> Dict:
         "X_train": X_tr, "y_train": y_tr,
         "X_val":   X_va, "y_val":   y_va,
         "X_test":  X_te, "y_test":  y_te,
+        "scaler": scaler,  # 추론 시 입력 정규화 (학습-추론 분포 일치) — services/pdm_service.py 참조
         "meta": {
             "name": "AI4I",
             "task": "binary_classification",
@@ -536,7 +537,7 @@ def load_cmapss_lstm(subset: str = "FD001") -> Dict:
     y_te = np.array(y_te_list, dtype=np.float32)
 
     # 정규화 (train의 (N*L, F) 통계로 fit)
-    _, (X_tr, X_va, X_te) = _scale_seq(X_tr, X_va, X_te)
+    scaler, (X_tr, X_va, X_te) = _scale_seq(X_tr, X_va, X_te)
 
     # shape (B, F, L) = (B, 14, 30) — 시계열 모델 입력은 (B, L, F) 이지만
     # channel-first 형식으로 저장하고 모델에서 transpose 한다.
@@ -547,6 +548,7 @@ def load_cmapss_lstm(subset: str = "FD001") -> Dict:
         "X_train": _to_bcl(X_tr), "y_train": y_tr,
         "X_val":   _to_bcl(X_va), "y_val":   y_va,
         "X_test":  _to_bcl(X_te), "y_test":  y_te,
+        "scaler": scaler,  # 추론 시 sequence 정규화 (학습-추론 분포 일치) — services/pdm_service.py 참조
         "meta": {"name": f"C-MAPSS-{subset}", "task": "regression",
                  "feature_dim": len(feature_cols), "window": window,
                  "rul_clip": rul_clip},
@@ -677,7 +679,7 @@ def load_ncmapss_lstm(file_name: str = "N-CMAPSS_DS01-005.h5",
     y_va = y_va / rul_clip
     y_te = y_te / rul_clip
 
-    _, (X_tr, X_va, X_te) = _scale_seq(X_tr, X_va, X_te)
+    scaler, (X_tr, X_va, X_te) = _scale_seq(X_tr, X_va, X_te)
 
     def _to_bcl(x):
         return x.transpose(0, 2, 1).astype(np.float32)
@@ -686,6 +688,7 @@ def load_ncmapss_lstm(file_name: str = "N-CMAPSS_DS01-005.h5",
         "X_train": _to_bcl(X_tr), "y_train": y_tr,
         "X_val":   _to_bcl(X_va), "y_val":   y_va,
         "X_test":  _to_bcl(X_te), "y_test":  y_te,
+        "scaler": scaler,  # 추론 시 sequence 정규화 (학습-추론 분포 일치) — services/pdm_service.py 참조
         "meta": {"name": "N-CMAPSS", "task": "regression",
                  "feature_dim": 43, "window": window,
                  "rul_clip": rul_clip, "rul_norm": True},
