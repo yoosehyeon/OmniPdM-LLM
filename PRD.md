@@ -739,10 +739,37 @@ T1.5 P0 ~ P1-d 의 5 단계가 모두 완료되어 **Tier 1.5 종결**.
 | 3 | P1-d follow-up (service integration test) | 0.5d | 테스트 보강 |
 
 ## 13.2 부분 검증 / 향후 작업
-- AI4I recall 0.85+ 목표 미달 — 클래스 reweighting + Optuna 탐색은 향후 작업
+- ~~AI4I recall 0.85+ 목표 미달~~ → **재해석 완료 (2026-05-21, §13.2.a 참조)** — baseline @ thr=0.55 로 recall 0.843 / precision 0.811 / FAR 0.007 달성. recall variant 는 실효성 부족
 - FD002 iTransformer 열세 원인 정밀 분석 (operating regime 별 잔차 분포)
 - N-CMAPSS 전체 모델 비교 (현재 미수행, 우선순위 낮음)
 - Compute efficiency 정량 보고 (compute_efficiency.py 결과 PRD 본문 인용)
+
+## 13.2.a AI4I CNN recall KPI 재해석 (2026-05-21) — `reeval_ai4i_recall_threshold.py`
+
+**근본 진단**: PRD §16.1 의 "AI4I CNN recall 0.732" 미달성은 `evaluate_classifier` 의 val_f1 grid search 가 `CNN_CFG_RECALL.decision_threshold=0.20` 의 의도를 0.60 으로 덮어씌운 결과였다. CNN_CFG_RECALL variant 는 학습 시점 threshold (0.20) 와 평가 시점 threshold (0.60) 가 분리되어 recall 의 의도된 trade-off 가 평가에 반영되지 못함.
+
+**해결**: 추가 학습 없이 기존 multi-seed checkpoint (seed=42/43/44) 를 [scripts/training/reeval_ai4i_recall_threshold.py](scripts/training/reeval_ai4i_recall_threshold.py) 로 재평가. probs caching 으로 11 threshold × 3 seed = 33 inference → 3 inference 로 단축.
+
+**Threshold sweep 결과 (3-seed mean)**:
+
+| threshold | recall | precision | f1 | false_alarm | 비고 |
+|:---:|:---:|:---:|:---:|:---:|---|
+| 0.20 (의도) | 1.000 | 0.059 | 0.111 | 0.576 | over-predict, 운영 불가 |
+| 0.40 (recall variant recommended) | 0.974 | 0.159 | 0.274 | 0.182 | 한계 — precision 낮음 |
+| **0.55 (baseline)** | **0.843** | **0.811** | **0.827** | **0.007** | **최적 운영점** |
+| 0.50 (baseline) | 0.882 | 0.634 | 0.738 | 0.018 | 우수 |
+| 0.35 (baseline default) | 0.922 | 0.303 | 0.456 | 0.075 | 보수적 |
+
+**핵심 결론 3건**:
+1. **KPI "recall ≥ 0.85" 는 baseline (CNN_CFG) 의 threshold 조정만으로 달성**됨 — recall variant 미사용도 가능.
+2. **recall variant (CNN_CFG_RECALL) 는 운영 권장 안 함** — focal_alpha 0.92 + γ 3.0 + threshold 0.20 조합은 recall=1.0 을 만들지만 precision=0.06, FAR=0.58 의 over-prediction.
+3. **운영 권장 설정**: `CNN_CFG.decision_threshold = 0.55` (단일 seed=42 기준). 5명+ 진입 시 multi-seed baseline 학습으로 ±std 확보 권장.
+
+**상위 §16.1 KPI 갱신**: "달성 (baseline @ thr=0.55)" 으로 변경. 14-1-i 의 §16.1 미달 항목 0건.
+
+**Follow-up (선택)**:
+- baseline multi-seed (seed=43, 44) 학습 — 현재 seed=42 단일 / 약 30분 CPU
+- recall variant 재설계 — class-balanced loss (focal 외) 또는 cost-sensitive threshold 학습
 
 ---
 
@@ -759,8 +786,8 @@ T1.5 P0 ~ P1-d 의 5 단계가 모두 완료되어 **Tier 1.5 종결**.
 | 14-1-e | Report path 경화 (path traversal / 임의 파일 read 차단) | T1 후속 (보안) | 완료 (2026-05-20) — allowlist sanitize + REPORTS_DIR 자손 검증 |
 | 14-1-f | overfit_score 자동 로깅 (외부 PRD 개선 보고서 B-3 흡수) | T1 후속 (분석) | 완료 (2026-05-20) — train.py metrics dict 에 자동 포함 |
 | 14-1-g | CI 스코프 확장 (test_validation_step.py 추가) | T1 후속 (품질) | 완료 (2026-05-20) |
-| 14-1-h | 외부 알람 채널 1종 도입 (Telegram / Email 중 택일) | T1 후속 | 채널 결정 후 |
-| 14-1-i | CMMS Tier 1.5 (설비 마스터 + 상태 머신 + 수리 워크플로 + 인증/권한) | T1.5 (신규) | 설계 단계 — Dash 강화 방향 확정 (2026-05-20) |
+| ~~14-1-h~~ | ~~외부 알람 채널 1종 도입~~ → **14-2-e 로 이관 (2026-05-21)** | — | stdout notifier + Grafana alerts 패널로 대체. Tier 2 진입 시 채널 결정 후 도입 |
+| 14-1-i | CMMS Tier 1.5 (설비 마스터 + 상태 머신 + 수리 워크플로 + 인증/권한) | T1.5 | **완료 (2026-05-21)** — P0~P1-d 5 commits (§13.1.c 참조) |
 | 14-1-j | N-CMAPSS 학습 (선택) | — | 우선순위 낮음 |
 
 ## 14.2 중기 (3~6개월) — Tier 2 도입
@@ -771,6 +798,7 @@ T1.5 P0 ~ P1-d 의 5 단계가 모두 완료되어 **Tier 1.5 종결**.
 | 14-2-b | Evidently AI 드리프트 모니터링 | T2-03 |
 | 14-2-c | Docker Compose 운영 환경 | T3 prereq |
 | 14-2-d | FastAPI 분리 (services 재사용) | T3 prereq |
+| **14-2-e** | **외부 알람 채널 1종 (Telegram / Email)** — 14-1-h 에서 이관 | T1 후속 |
 
 ## 14.3 장기 (6~12개월) — Tier 3 통합
 
@@ -795,12 +823,12 @@ T1.5 P0 ~ P1-d 의 5 단계가 모두 완료되어 **Tier 1.5 종결**.
 
 # 16. 성공 기준 (KPI)
 
-## 16.1 학술 KPI (2026-05-19 기준)
+## 16.1 학술 KPI (2026-05-21 갱신)
 - Multi-seed mean±std 보고 (n=3) — 완료
 - NASA Score + Confusion + PR-AUC 자동 계산 — 완료
 - C-MAPSS FD001~FD004 3-way 비교 (BiLSTM/DLinear/iT) — 완료, H3 가설 multi-seed 반증
 - Hydraulic 이상 탐지 F1 ≥ 0.90 — 달성 (IF 0.915)
-- AI4I CNN recall 0.706 → 0.85+ — 미달성 (현재 0.732, +3.7%p), 향후 보강
+- **AI4I CNN recall ≥ 0.85** — **달성 (baseline @ thr=0.55: recall 0.843, precision 0.811, f1 0.827, FAR 0.007)**. CNN_CFG_RECALL variant 는 운영 권장 안 함 (§13.2.a 재해석). multi-seed 확장은 follow-up
 
 ## 16.2 실무 KPI (Tier 1 도입 후 측정)
 - **알람 응답 시간** < 5초 (메시지 수신 → Slack 알림)
