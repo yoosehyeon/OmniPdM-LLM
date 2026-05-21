@@ -15,6 +15,7 @@ audit_log: login_user / logout_user / record_login_failure 가 내부적으로 �
 
 from __future__ import annotations
 
+import html
 from typing import Any, Optional
 from urllib.parse import urlparse
 
@@ -66,13 +67,19 @@ def _is_safe_next(next_url: Optional[str]) -> bool:
 
 
 def _render_login_page(error: Optional[str] = None, next_url: str = "") -> str:
-    """간단한 Bootstrap 로그인 폼. CSRF token hidden input 포함."""
+    """간단한 Bootstrap 로그인 폼. CSRF token hidden input 포함.
+
+    XSS 방어: next_url, error 모두 attribute / text context 에 들어가기 전 html.escape.
+    `_is_safe_next` 가 scheme/netloc 만 막아 `/"><script>...` 같은 path-embedded payload 는
+    통과 가능 — 출력 시점에 escape 가 최종 방어선.
+    """
     csrf = sessions.get_or_create_csrf_token()
+    safe_error = html.escape(error, quote=True) if error else ""
+    safe_next = html.escape(next_url, quote=True) if next_url else ""
     error_html = (
-        f'<div class="alert alert-danger" role="alert">{error}</div>' if error else ""
+        f'<div class="alert alert-danger" role="alert">{safe_error}</div>' if safe_error else ""
     )
-    # next_url 은 _is_safe_next 검증 후 들어와야 함 — 호출자가 책임.
-    next_input = f'<input type="hidden" name="next" value="{next_url}">' if next_url else ""
+    next_input = f'<input type="hidden" name="next" value="{safe_next}">' if safe_next else ""
 
     return f"""<!doctype html>
 <html lang="ko">

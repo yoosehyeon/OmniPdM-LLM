@@ -42,10 +42,17 @@ AI4I_FIELD_LABELS = {
 }
 
 
-@lru_cache(maxsize=8)
-def get_analyze_service(mode: str, dataset_key: str) -> AnalyzeService:
-    """AnalyzeService 싱글톤 (mode + dataset_key 조합별 캐시)."""
-    return AnalyzeService(mode=mode, dataset_key=dataset_key)
+@lru_cache(maxsize=16)
+def get_analyze_service(
+    mode: str, dataset_key: str, risk_method: str = "weighted"
+) -> AnalyzeService:
+    """AnalyzeService 싱글톤 (mode + dataset_key + risk_method 조합별 캐시).
+
+    risk_method 를 캐시 키에 포함시키는 이유: 호출자가 service.risk_method 를 mutate
+    하면 같은 캐시 객체를 공유하는 다른 callback 의 결과가 오염될 수 있다 (race).
+    조합별 별도 인스턴스로 분리해 mutation 없이 안전.
+    """
+    return AnalyzeService(mode=mode, dataset_key=dataset_key, risk_method=risk_method)
 
 
 def safe_json(data: Any) -> str:

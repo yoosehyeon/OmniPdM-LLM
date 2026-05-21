@@ -122,9 +122,13 @@ OmniPdM/
 └── tests/
     ├── test_smoke.py                   # Dash boot + Services smoke
     ├── test_validation_step.py
-    ├── test_pdm_lstm_step.py
-    ├── test_llm_stream_step.py
-    └── test_analyze_lstm_step.py
+    ├── test_auth_sessions.py           # Flask login + RBAC
+    ├── test_passwords.py               # werkzeug hash wrapper
+    ├── realtime/                       # device_service / maintenance_order_service
+    └── manual/                         # 수동 실행 step 스크립트 (pytest 미수집)
+        ├── pdm_lstm_step.py
+        ├── llm_stream_step.py
+        └── analyze_lstm_step.py
 ```
 
 데이터셋 원본, 체크포인트, 보고서, 로그, MLflow DB는 저장소에 포함되지 않습니다.
@@ -361,14 +365,24 @@ models_core/dataset/
 ## 테스트
 
 ```bash
-# Smoke (Dash boot + Services fallback 경로)
-pytest tests/test_smoke.py -v
+# 자동 (pytest 전체)
+pytest tests/ -v
 
-# 개별 step 테스트
+# Smoke (Dash boot + Services fallback 경로) — CI 외부 의존 0
+pytest tests/test_smoke.py -v
 pytest tests/test_validation_step.py -v
-pytest tests/test_pdm_lstm_step.py -v
-pytest tests/test_analyze_lstm_step.py -v
-pytest tests/test_llm_stream_step.py -v
+
+# 인증 / RBAC
+pytest tests/test_auth_sessions.py -v
+pytest tests/test_passwords.py -v
+
+# 실시간 service (mock 단위 + DB integration — OMNIPDM_TEST_DB_URL 설정 시)
+pytest tests/realtime/ -v
+
+# 수동 step (pytest 미수집 — 직접 실행)
+python -m tests.manual.pdm_lstm_step
+python -m tests.manual.analyze_lstm_step
+python -m tests.manual.llm_stream_step
 ```
 
 ---

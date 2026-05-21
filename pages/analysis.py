@@ -207,9 +207,9 @@ def run_analysis(_n, air_temp, proc_temp, rpm, torque, tool_wear, mode, risk_met
         "tool_wear_min": tool_wear,
     }
 
-    service = get_analyze_service(mode=mode, dataset_key="ai4i_cnn")
-    service.risk_method = risk_method
-    service.risk_service.method = risk_method
+    service = get_analyze_service(
+        mode=mode, dataset_key="ai4i_cnn", risk_method=risk_method,
+    )
 
     try:
         result = service.run(payload)

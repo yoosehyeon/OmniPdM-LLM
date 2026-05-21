@@ -21,7 +21,7 @@ from datetime import datetime
 from threading import RLock
 from typing import TYPE_CHECKING, Optional, Protocol, runtime_checkable
 
-from services.auth.passwords import PLACEHOLDER_HASH, verify_password
+from services.auth.passwords import dummy_verify, verify_password
 
 if TYPE_CHECKING:
     from psycopg import Connection  # noqa: F401 — 타입 힌트 전용
@@ -147,9 +147,11 @@ class TimescaleUserService:
                 row = cur.fetchone()
 
         if row is None:
-            # user 없음 — placeholder hash 로 dummy verify (timing 평탄화).
-            # placeholder 는 verify_password 가 무조건 False 라 결과는 안 바뀜.
-            verify_password(PLACEHOLDER_HASH, plaintext)
+            # user 없음 — random hash 로 dummy verify (timing 평탄화).
+            # placeholder hash 는 verify_password 에서 즉시 False 라 scrypt 미실행 →
+            # user 존재 분기와 wall-clock 차이가 생긴다. dummy_verify 가 진짜 scrypt
+            # 1회 실행으로 분기 timing 평탄.
+            dummy_verify(plaintext)
             return None
 
         active = row[4]

@@ -18,18 +18,6 @@ class GuardrailService:
         r"확실히 고장",
         r"반드시 파손",
     ]
-    ALLOWED_SENSOR_TERMS = [
-        "air temperature",
-        "process temperature",
-        "rotational speed",
-        "rpm",
-        "torque",
-        "tool wear",
-        "마모",
-        "토크",
-        "회전 속도",
-        "온도",
-    ]
 
     def validate(
         self,

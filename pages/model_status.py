@@ -26,7 +26,17 @@ DATASET_KEYS = [
 
 
 def _find_latest_checkpoint(stem: str, suffix: str) -> Path | None:
-    candidates = sorted(config.CHECKPOINT_DIR.glob(f"{stem}*{suffix}"))
+    """`<stem>` 정확 매칭 + 선택적 `_YYYYMMDD_HHMMSS[_seed<N>]` suffix 만 허용.
+
+    `f"{stem}*{suffix}"` glob 은 ai4i_cnn 이 ai4i_cnn_recall 까지 매칭하는 leak 발생.
+    underscore 이후 패턴만 허용하고 정확 stem 매칭으로 좁힌다.
+    """
+    # `<stem>.<suffix>` (run_id 없음, 옛 단일 학습) 또는 `<stem>_<rest>.<suffix>`
+    direct = config.CHECKPOINT_DIR / f"{stem}{suffix}"
+    candidates = list(config.CHECKPOINT_DIR.glob(f"{stem}_*{suffix}"))
+    if direct.exists():
+        candidates.append(direct)
+    candidates.sort()
     return candidates[-1] if candidates else None
 
 

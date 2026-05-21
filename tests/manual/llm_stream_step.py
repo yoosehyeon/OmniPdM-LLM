@@ -1,8 +1,10 @@
 """
 P3-① LlmService.generate_stream() 검증 스크립트.
 
+manual 디렉토리 — pytest 자동 수집 대상 아님. `python -m tests.manual.llm_stream_step` 로 직접 실행.
+
 실행:
-    python test_llm_stream_step.py
+    python -m tests.manual.llm_stream_step
 
 동작:
 1. Warning 시나리오 기준 mock Prediction/Explanation/Risk 구성

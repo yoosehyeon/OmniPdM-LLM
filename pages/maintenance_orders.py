@@ -79,6 +79,11 @@ def _current_role() -> Optional[str]:
     return user.role if user else None
 
 
+def _current_user_or_none():
+    """callback 안에서 role + actor_id 한 번에 — DB 왕복 1회로 정리."""
+    return current_user(_user_service)
+
+
 def _open_new_panel(can_write: bool) -> Any:
     if not can_write:
         return dbc.Alert(
@@ -287,14 +292,14 @@ def _refresh_table(_n_clicks: int, status_filter: str):
     prevent_initial_call=True,
 )
 def _open_new(n_clicks: int, device_id: str, title: str, priority: str, description: str):
-    role = _current_role()
+    user = _current_user_or_none()
+    role = user.role if user else None
     if role not in _WRITE_ROLES:
         return dbc.Alert("Forbidden: open order requires admin/operator role.", color="danger")
 
     if not device_id or not title:
         return dbc.Alert("device_id and title are required.", color="warning")
 
-    user = current_user(_user_service)
     actor_id = user.user_id if user else None
     try:
         order = _order_service.create_order(
@@ -319,13 +324,13 @@ def _open_new(n_clicks: int, device_id: str, title: str, priority: str, descript
     prevent_initial_call=True,
 )
 def _close_order(n_clicks: int, order_id: Optional[int]):
-    role = _current_role()
+    user = _current_user_or_none()
+    role = user.role if user else None
     if role not in _WRITE_ROLES:
         return dbc.Alert("Forbidden: close order requires admin/operator role.", color="danger")
     if not order_id:
         return dbc.Alert("order_id is required.", color="warning")
 
-    user = current_user(_user_service)
     actor_id = user.user_id if user else None
     try:
         changed = _order_service.close_order(int(order_id), actor_id=actor_id)

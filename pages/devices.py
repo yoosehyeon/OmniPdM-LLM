@@ -70,6 +70,11 @@ def _current_role() -> Optional[str]:
     return user.role if user else None
 
 
+def _current_user_or_none():
+    """callback 안에서 role 검사 + actor_id 한 번에 — DB 왕복 1회로 정리."""
+    return current_user(_user_service)
+
+
 def _status_change_panel(can_write: bool) -> Any:
     if not can_write:
         return dbc.Alert(
@@ -192,14 +197,15 @@ def _populate_target_id(device_ids: List[str]) -> List[Dict[str, str]]:
 )
 def _apply_status(n_clicks: int, target_id: str, new_status: str, reason: str):
     # 권한 재확인 — UI 가 숨기더라도 callback 호출은 직접 가능. defense in depth.
-    role = _current_role()
+    # 단일 user 조회로 role 검사 + actor_id 동시 획득 (DB 왕복 2회 → 1회).
+    user = _current_user_or_none()
+    role = user.role if user else None
     if role not in _STATUS_WRITE_ROLES:
         return dbc.Alert("Forbidden: status change requires admin/operator role.", color="danger")
 
     if not target_id or not new_status:
         return dbc.Alert("Select both device_id and new status.", color="warning")
 
-    user = current_user(_user_service)
     actor_id = user.user_id if user else None
     try:
         _device_service.set_status(
