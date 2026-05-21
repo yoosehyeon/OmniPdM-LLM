@@ -565,6 +565,109 @@ P0 작업량: 1.5d + 1h (당초 1.5d 에서 외부 리뷰 흡수로 +1h).
 
 **다음 단계 (P1, 예상 2~3d)**: Flask 인증 라우트 + `@role_required` 데코레이터 본문 + Dash devices/orders 페이지 + werkzeug 비밀번호 hash 마이그레이션 (seed admin placeholder 교체).
 
+### T1.5 P1-a 구현 완료 (2026-05-20) — werkzeug hash + admin seed 부트스트랩
+
+| 산출물 | 비고 |
+|---|---|
+| [services/auth/passwords.py](services/auth/passwords.py) | `hash_password` / `verify_password` / `is_placeholder_hash` (werkzeug.security 얇은 wrapper). placeholder hash 는 verify 시 무조건 reject — 부트스트랩 누락 사고 차단. 비문자열 입력 robust (`isinstance` 가드) |
+| [scripts/migrations/bootstrap_admin.py](scripts/migrations/bootstrap_admin.py) | CLI: `--password-file` > env > `--interactive` 우선순위 (K8s/Docker secret 표준 준수). `--dry-run` / `--force` / POSIX 0600 권한 검사 (Windows 가드). 성공 시 `AuditAction.USER_UPDATED` + meta(reason/force/was_placeholder) 자동 INSERT. Exit codes 0/1/2/3 명시 |
+| [tests/test_passwords.py](tests/test_passwords.py) | 13 unit tests — hash idempotency 거부, salt 무작위성, placeholder reject 무조건, 비문자열 입력 robust |
+| [requirements.txt](requirements.txt) | `werkzeug>=3.0` 직접 의존 명시 (Dash transitive 이지만 명확화) |
+
+**외부 리뷰 흡수 (P1-a 작성 중 8건 평가 → 4건 채택)**:
+- 채택: `--password-file` 최우선 (K8s/Docker secret 표준), `--dry-run`, `psycopg.Error` 명시 catch + exit code 3, POSIX 권한 검사 (Windows 가드)
+- 거부: env var 제거 (CI 자동화 필수), logging 마이그레이션 (services/realtime/* 일관성), `PLACEHOLDER_HASH = "!"` (이미 ship 된 SQL 과 호환 파괴), password_policy 모듈 분리 (YAGNI)
+
+**사용법**:
+```bash
+# 첫 부트스트랩 (대화형)
+python -m scripts.migrations.bootstrap_admin --interactive
+
+# CI (env var, 사용 후 즉시 unset)
+export OMNIPDM_ADMIN_BOOTSTRAP_PASSWORD=changeme
+python -m scripts.migrations.bootstrap_admin
+unset OMNIPDM_ADMIN_BOOTSTRAP_PASSWORD
+
+# K8s/Docker (secret 파일)
+chmod 600 /run/secrets/admin_pw
+python -m scripts.migrations.bootstrap_admin --password-file /run/secrets/admin_pw
+```
+
+**다음 단계 (P1-b, 예상 0.5~1d)**: Flask 인증 라우트 (login/logout/session) + `services/auth/sessions.py` (Flask-Login 또는 직접 session 관리 결정).
+
+### T1.5 P1-b 구현 완료 (2026-05-20) — Flask 인증 라우트 + Dash 페이지 가드
+
+**설계 결정 4건 (외부 리뷰 합의)**:
+1. session 라이브러리: **직접 Flask session** (Flask-Login 미도입 — PoC 단일 사용자, 의존성 최소)
+2. CSRF 방어: **수동 csrf token** (login 폼만 — Flask-WTF 미도입)
+3. 가드 위치: **`@server.before_request` 단일 진입점** (페이지 decorator 대신)
+4. `OMNIPDM_SECRET_KEY` 미설정 시: **random fallback + 경고** (개발 편의 vs hard error)
+
+| 산출물 | 비고 |
+|---|---|
+| [models_core/config.py](models_core/config.py) §7 | `OMNIPDM_SECRET_KEY` 환경변수 + `secrets.token_urlsafe(32)` fallback + 경고 |
+| [services/auth/users.py](services/auth/users.py) | `UserService` Protocol + Null/Timescale impls. `verify_credentials` 가 모든 실패 경로에서 `verify_password` 1회 호출 → timing 평탄화 (NIST/OWASP 권장). password_hash 는 `User` dataclass 에서 제외 |
+| [services/auth/sessions.py](services/auth/sessions.py) | `login_user` / `logout_user` / `current_user` / `is_authenticated` / `current_user_id` + CSRF (`get_or_create_csrf_token` / `verify_csrf_token` / `rotate_csrf_token` — session fixation 방어). audit_log 자동 INSERT (`LOGIN_SUCCESS` / `LOGIN_FAILURE` / `LOGOUT`) |
+| [services/auth/routes.py](services/auth/routes.py) | Flask Blueprint (`/login` GET/POST, `/logout` GET/POST). Bootstrap CDN HTML 임베드, `_is_safe_next` 로 open redirect 방어. Dash page 로 등록 안 함 (test_smoke 의 6 페이지 카운트 유지) |
+| [app.py](app.py) | `server.secret_key` 설정 + blueprint 등록 + `@server.before_request` 가드 + `OMNIPDM_AUTH_REQUIRED` toggle + `_dash` / `/static` / `/assets` exempt + 동적 navbar (logout 링크). `audit_conn_provider` 는 closure 캐시로 connection leak 방지 |
+| [tests/test_auth_sessions.py](tests/test_auth_sessions.py) | 14 unit tests (CSRF, 인증 실패/성공, ?next= 보존, open redirect 차단, 가드 exempt, logout) — Mock UserService 주입, CI smoke 외부 의존 0 |
+
+**외부 리뷰 흡수 (P1-b 작성 중 12건 평가 → 4건 채택)**:
+- 채택: `verify_credentials` 의 inactive user dummy verify (timing 평탄화), `PLACEHOLDER_HASH` module-level import, `audit_conn_provider` closure 캐시, `_is_safe_next` open redirect 방어
+- 거부: `row_factory=dict_row` (positional tuple 일관성), `print` → `logging` 마이그레이션 (전체 일관성), `dcc.Link` 로 logout (Flask 라우트 호출 안 됨), Flask-Login/Flask-WTF 도입 (PoC 과잉)
+
+**환경변수 운영 가이드**:
+```bash
+# 운영 필수
+export OMNIPDM_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+
+# 개발 편의 (인증 비활성)
+export OMNIPDM_AUTH_REQUIRED=false
+```
+
+**Future migration 메모 (사용자 5명+ 시점)**:
+- Flask-Login + Flask-WTF 도입 검토 — multi-factor / "remember me" / session protection 강화
+- psycopg `ConnectionPool` 로 audit_conn_provider 교체
+- RBAC `@role_required` 본문 활성화 (P1-c)
+- Row-Level Security (RLS) — devices/maintenance_orders 에 role 기반 정책
+
+**검증 결과**:
+- `pytest tests/test_auth_sessions.py -v` → **14 passed**
+- `pytest tests/` → **62 passed, 4 skipped, 0 failed** (P1-a 의 48 + 신규 14)
+- `app.server.test_client()` smoke: `/login` 200 / `/logout` 302 / `/` 302→`/login?next=/` / `/status?foo=bar` 302→`/login?next=/status?foo=bar`
+
+**다음 단계 (P1-c, 예상 2~3h)**: `services/auth/sessions.py` 에 `role_required` 데코레이터 본문 활성화 + `services/realtime/device_service.scope_required` placeholder 와 통합. 기존 Dash 페이지 callback 에 부착.
+
+### T1.5 P1-c 구현 완료 (2026-05-21) — `role_required` RBAC + cookie 보안 + 403 페이지
+
+**설계 결정 4건**:
+1. admin 통과 정책: **admin 항상 통과** (super-user 표준 패턴)
+2. 미인증 처리: `before_request` 가 이미 redirect, 안전망으로 **401 → blueprint errorhandler 가 `/login` redirect**
+3. 권한 부족 응답: **403 + 간단 Bootstrap HTML 페이지** (login 과 일관 테마)
+4. `device_service.scope_required` 와 관계: **별도 유지** (scope_required = 데이터 범위 필터링, role_required = 역할 검사 — 의미 다름)
+
+| 산출물 | 비고 |
+|---|---|
+| [services/auth/sessions.py](services/auth/sessions.py) | `role_required(*roles)` 데코레이터 + `set_user_service_for_rbac` / `_get_rbac_user_service` 모듈 변수 DI. admin 무조건 통과, DB 에서 user 사라지면 session 정리 후 401 |
+| [services/auth/routes.py](services/auth/routes.py) | `init_auth_blueprint` 가 `set_user_service_for_rbac` 도 자동 호출 (한 곳에서 일관 주입). admin-only stub `/admin/health-check` 추가. `bp.app_errorhandler(401)` → `/login?next=/` redirect, `bp.app_errorhandler(403)` → Bootstrap HTML |
+| [services/auth/__init__.py](services/auth/__init__.py) | `role_required` + `set_user_service_for_rbac` export |
+| [app.py](app.py) | OWASP 기본 cookie 보안 — `SESSION_COOKIE_HTTPONLY=True`, `SESSION_COOKIE_SAMESITE="Lax"`, `SESSION_COOKIE_SECURE=$OMNIPDM_SESSION_COOKIE_SECURE` (PoC dev 는 OFF, 운영 진입 시 ON) |
+| [tests/test_auth_sessions.py](tests/test_auth_sessions.py) | RBAC 5개 추가 (admin 통과, operator 403, 미인증 redirect, decorator ValueError, user 사라짐 401). fixture 가 `routes._user_service` + `sessions._rbac_user_service` 둘 다 mock 주입 |
+
+**진단된 버그 (작업 중 발견 + 즉시 수정)**:
+fixture 가 `routes._user_service` 만 mock 으로 바꾸고 `sessions._rbac_user_service` 는 `NullUserService` 그대로 두는 바람에 RBAC 테스트가 `get_user → None → abort(401) → /login` 로 빠짐. 수정: fixture 에서 `auth_sessions.set_user_service_for_rbac(mock_users)` 호출 추가.
+
+**외부 리뷰 흡수 (P1-c 작성 중 14건 평가 → 1건 채택)**:
+- 채택: OWASP cookie 기본 보안 (`HTTPONLY` / `SAMESITE` / `SECURE` env-toggle)
+- 거부 (5명+ migration 시점 항목 — PoC 범위 밖): Bootstrap 5.3.0→5.3.8 (SRI hash 검증 불가), Jinja2 template 마이그레이션, Flask-Limiter rate limiting, Flask-Session server-side migration, `BeautifulSoup` CSRF 추출 (의존성), `monkeypatch` fixture (작동 코드에 변경 비용 > 가치), parametrized test, audit mock 호출 검증, session idle timeout, CSRF 다른 endpoint 확대 — 모두 명시적으로 "5명+ 시점" 미래 작업
+
+**검증 결과**:
+- `pytest tests/test_auth_sessions.py -v` → **19 passed** (P1-b 의 14 + 신규 5)
+- `pytest tests/` → **67 passed, 4 skipped, 0 failed** (P1-b 의 62 + 신규 5)
+- Skipped 4개는 `tests/realtime/test_device_service.py::TestDeviceServiceIntegration` 의 실 TimescaleDB 통합 테스트 — `OMNIPDM_TEST_DB_URL` 환경변수 설정 시 실행, 미설정 시 자동 skip (CI smoke 외부 의존 0 정책)
+
+**다음 단계 (P1-d, 예상 1~1.5d)**: Dash devices / maintenance_orders 페이지 — `DeviceService` 와 `MaintenanceOrderService` (신규) 통합. 페이지마다 `role_required` 부착으로 admin/operator 분리.
+
 ## 13.2 부분 검증 / 향후 작업
 - AI4I recall 0.85+ 목표 미달 — 클래스 reweighting + Optuna 탐색은 향후 작업
 - FD002 iTransformer 열세 원인 정밀 분석 (operating regime 별 잔차 분포)

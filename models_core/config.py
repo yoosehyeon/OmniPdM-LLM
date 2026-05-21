@@ -337,5 +337,28 @@ DB_PASSWORD = _env_str("OMNIPDM_DB_PASSWORD", "omnipdm")
 DB_ENABLED  = _env_str("OMNIPDM_DB_ENABLED",  "true").lower() in ("1", "true", "yes", "on")
 
 
+# ---------------------------------------------------------------------------
+# 7) Tier 1.5 — Flask session SECRET_KEY (P1-b)
+# ---------------------------------------------------------------------------
+# session cookie signing 용. 운영에서는 반드시 OMNIPDM_SECRET_KEY 환경변수로 32자+ random
+# 문자열을 주입해야 한다. 미설정 시 secrets.token_urlsafe(32) 로 fallback → 프로세스
+# 재시작마다 새 키가 생성되어 기존 session 이 모두 무효화됨 (개발 편의 우선, 운영 위험 경고).
+#
+# 운영 배포 가이드:
+#   docker run -e OMNIPDM_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')" ...
+#   또는 docker-compose.yml 의 environment 에 env_file 로 분리.
+import secrets as _secrets  # 표준 라이브러리 — 추가 dep 없음.
+
+SECRET_KEY = _env_str("OMNIPDM_SECRET_KEY", "")
+if not SECRET_KEY:
+    SECRET_KEY = _secrets.token_urlsafe(32)
+    # ASCII hyphen 사용 — Windows cp949 호환.
+    print(
+        "[config] WARNING: OMNIPDM_SECRET_KEY not set - using ephemeral random key. "
+        "Sessions will be invalidated on every restart. Set OMNIPDM_SECRET_KEY in production.",
+        flush=True,
+    )
+
+
 # import 시점에 자동으로 시드를 고정한다.
 set_seed()
