@@ -42,21 +42,25 @@ class TestDashAppBoot:
         assert hasattr(app, "app")
         assert hasattr(app, "server")  # WSGI entry
 
-    def test_six_pages_registered(self):
+    def test_eight_pages_registered(self):
         import app  # noqa: F401
         import dash
         pages = list(dash.page_registry.keys())
-        assert len(pages) == 6, f"expected 6 pages, got {len(pages)}: {pages}"
+        # P1-d (Tier 1.5) 에서 devices/orders 페이지가 추가되어 8 개.
+        assert len(pages) == 8, f"expected 8 pages, got {len(pages)}: {pages}"
 
     def test_expected_page_paths(self):
         import app  # noqa: F401
         import dash
         paths = {p["path"] for p in dash.page_registry.values()}
-        # 핵심 경로 4개 확인 (Analysis '/', Status, Reports 는 구현됨)
+        # 기존 4 개 (Analysis '/', Status, Reports, LSTM)
         assert "/" in paths
         assert "/status" in paths
         assert "/reports" in paths
         assert "/lstm" in paths
+        # P1-d 추가 2 개 (CMMS UI)
+        assert "/devices" in paths
+        assert "/orders" in paths
 
 
 # ===========================================================================

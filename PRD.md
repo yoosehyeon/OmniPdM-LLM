@@ -668,6 +668,76 @@ fixture 가 `routes._user_service` 만 mock 으로 바꾸고 `sessions._rbac_use
 
 **다음 단계 (P1-d, 예상 1~1.5d)**: Dash devices / maintenance_orders 페이지 — `DeviceService` 와 `MaintenanceOrderService` (신규) 통합. 페이지마다 `role_required` 부착으로 admin/operator 분리.
 
+### T1.5 P1-d 구현 완료 (2026-05-21) — Dash devices/orders 페이지 + MaintenanceOrderService — **Tier 1.5 종결**
+
+**설계 결정 5건**:
+1. role 기반 UI: **layout 안에서 `current_user(user_service)` 로 role 조회 + 조건부 컴포넌트** (Dash callback 은 Flask request 가 아니라 `@role_required` 직접 부착 어려움 — `before_request` 가 인증 가드)
+2. maintenance_orders CRUD 범위: **list + create + close** (admin/operator). update_priority / cancel / reopen 은 follow-up
+3. status 전이 액션: **devices 페이지 dropdown + Apply 버튼**. 실제 호출은 Dash callback → `device_service.set_status`
+4. 페이지 카운트: `test_smoke` 의 `len(pages) == 6` → **`== 8`** 업데이트 + `/devices` `/orders` path assertion 추가
+5. 외부 알람 → 자동 order 생성: **이번 작업 미포함** (14-1-h 알람 채널 후속)
+
+| 산출물 | 비고 |
+|---|---|
+| [services/realtime/maintenance_order_service.py](services/realtime/maintenance_order_service.py) | `MaintenanceOrderService` Protocol + Null/Timescale impls. `list/get/create/update_status/close_order` + `audit_log` 자동 INSERT (ORDER_CREATED/STATUS_CHANGED/CLOSED/CANCELLED). `closed_at` 은 DB 트리거 자동. priority/status CHECK 와 동기된 ORDER_STATUSES/ORDER_PRIORITIES 상수 |
+| [services/realtime/__init__.py](services/realtime/__init__.py) | 신규 export 보강 |
+| [pages/devices.py](pages/devices.py) | `/devices` Dash 페이지 — DataTable + Bootstrap status badge + status 전이 패널 (admin/operator). callback 에서 role 재검증 (defense in depth) |
+| [pages/maintenance_orders.py](pages/maintenance_orders.py) | `/orders` Dash 페이지 — list + status filter + Open new (admin/operator) + Close (admin/operator) |
+| [tests/test_smoke.py](tests/test_smoke.py) | 페이지 카운트 6 → 8, `/devices` + `/orders` path assertion 추가 |
+| [tests/realtime/test_maintenance_order_service.py](tests/realtime/test_maintenance_order_service.py) | 11 tests — Null backend, 상수 동기, mock validation (invalid priority/status), schema integration (FK/CHECK/trigger) |
+
+**외부 리뷰 흡수 (P1-d 작성 중 4 라운드 평가 → 1건 채택)**:
+- 채택: `params: List[Any] = []` type hint 명시
+- 거부 (작동 코드 + PoC 범위 밖): row_factory dict_row (positional tuple 일관성), `ConfirmDialog` (close 는 reversible), Auto Interval refresh (DB 부하), 친절 에러 메시지 i18n (현재로 충분), `mock_order_service` fixture (3 호출 — 헬퍼 충분), parametrized validation (YAGNI), `BeautifulSoup` (의존성), 5명+ pagination/Bulk/Form validation
+
+**P1-d follow-up (별도 작업)**:
+- **Service-level end-to-end integration test**: 현재 schema-level (FK/CHECK/trigger) 만 `db_conn` fixture 로 검증. `TimescaleMaintenanceOrderService` 가 별도 connection + `autocommit=True` 라 `db_conn` 의 ROLLBACK 으로 격리 안 됨. 진정한 service round-trip 검증은 (a) service constructor 의 connection injection 리팩토링 또는 (b) dedicated test DSN + 명시 cleanup 필요. P1-d 범위 밖
+- **`update_priority` / `cancel` / `reopen`**: 5명+ 운영팀 진입 시점
+- **알람 → 자동 order 생성**: 14-1-h 외부 알람 채널 도입 후 trigger
+
+**검증 결과**:
+- `pytest tests/` → **74 passed, 8 skipped, 0 failed** (P1-c 의 67 + 신규 7 unit). Skipped 8개는 모두 `OMNIPDM_TEST_DB_URL` 설정 시 실행되는 schema integration test (DeviceService 4 + MaintenanceOrder 4)
+- 페이지 boot smoke: `python -c "import app"` 로 8 페이지 등록 확인
+
+---
+
+## 13.1.c CMMS Tier 1.5 회고 (2026-05-21) — 완료 선언
+
+T1.5 P0 ~ P1-d 의 5 단계가 모두 완료되어 **Tier 1.5 종결**.
+
+**핵심 산출물 (4 commits)**:
+| ID | 커밋 | 산출물 |
+|---|---|---|
+| P0 | `ef3ea7b` | 5 신규 테이블 (users/devices/maintenance_orders/device_status_history/audit_log) + FK 강결합 + DB 트리거 + DeviceService + audit_actions |
+| P1-a | `e31fdfd` | werkzeug 비밀번호 hash + admin seed 부트스트랩 (`--password-file`/`--dry-run`/`--force`) |
+| P1-b | `1e79ca3` | Flask `/login`/`/logout` 라우트 + Dash before_request 가드 + CSRF + session audit_log |
+| P1-c | `e142ee3` | `role_required` RBAC + 403 페이지 + OWASP cookie 보안 |
+| P1-d | (현재) | Dash `/devices`/`/orders` 페이지 + `MaintenanceOrderService` + page count 6→8 |
+
+**총 코드량 (rough)**: 1500+ LOC code + 80+ tests (74 passing, 8 skipped on DB).
+
+**달성된 T1.5 결정사항 (7건 모두 구현 확인)**:
+1. device_id TEXT PK + ON DELETE RESTRICT + soft delete — ✅
+2. users 테이블 TimescaleDB 동일 인스턴스 — ✅
+3. PDF export xhtml2pdf — 보류 (UI 페이지 추가에 따라 우선순위 ↓)
+4. Grafana 인증 별도 로그인 — 유지
+5. 3-role + hard-coded `@role_required` — ✅
+6. devices 컬럼만 scoping (`plant_id`, `equipment_group_id`) — ✅ (필터링은 5명+ 시점)
+7. audit_log 도입 — ✅ (모든 변경 자동 기록)
+
+**T1.5 후속 (별도 backlog)**:
+- 14-1-h 외부 알람 채널 (Telegram / Email) — **사용자 결정 대기**
+- §13.2-1 AI4I recall 0.85+ (학술 KPI 유일 미달성)
+- P1-d follow-up: service-level integration test 강화, alarm → 자동 order, update_priority/cancel/reopen
+- 5명+ migration 트리거 항목 (PRD docstring 곳곳 명시): Flask-Login + Flask-WTF + Flask-Session 서버사이드 + ConnectionPool + pagination + RLS
+
+**다음 자연 진입점**:
+| 우선순위 | 항목 | 비용 | 사유 |
+|---|---|---|---|
+| 1 | 14-1-h Telegram/Email 알람 채널 | 1d (결정 후) | **사용자 결정 필요** |
+| 2 | §13.2-1 AI4I recall 0.85+ | 1d | 학술 KPI |
+| 3 | P1-d follow-up (service integration test) | 0.5d | 테스트 보강 |
+
 ## 13.2 부분 검증 / 향후 작업
 - AI4I recall 0.85+ 목표 미달 — 클래스 reweighting + Optuna 탐색은 향후 작업
 - FD002 iTransformer 열세 원인 정밀 분석 (operating regime 별 잔차 분포)
