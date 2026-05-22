@@ -1,0 +1,45 @@
+# Python
+__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+.cache
+
+# Virtual envs
+.venv
+venv
+env
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Frontend — node_modules 는 Stage 1 에서 npm ci 로 재생성하므로 host 의 것 불요.
+frontend/node_modules
+frontend/dist
+
+# Datasets & artifacts (PoC 용 대용량).
+models_core/dataset
+models_core/artifacts
+artifacts/checkpoints
+artifacts/reports
+mlruns
+mlartifacts
+mlflow.db
+
+# Logs
+logs
+*.log
+
+# Git/IDE
+.git
+.gitignore
+.vscode
+.idea
+
+# Docs (이미지가 큰 경우 build context 부담).
+# 필요시 주석 해제: docs
+
+# Tests (런타임 이미지에 불요).
+tests

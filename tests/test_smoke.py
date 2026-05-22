@@ -31,36 +31,32 @@ os.environ.pop("ENABLE_LLM_STREAM", None)
 
 
 # ===========================================================================
-# 1) Dash app boot
+# 1) Flask app boot (PRD v7.0 — Dash 제거, React SPA 정적 서빙)
 # ===========================================================================
 
-class TestDashAppBoot:
-    """app.py 가 정상 부팅하고 6개 페이지가 등록되는지 확인."""
+class TestFlaskAppBoot:
+    """app.py 가 Flask 단독으로 부팅하고, blueprint/SPA 라우트가 등록되는지 확인."""
 
     def test_app_imports(self):
         import app  # noqa: F401
         assert hasattr(app, "app")
-        assert hasattr(app, "server")  # WSGI entry
+        assert hasattr(app, "server")  # WSGI entry (= app 와 동일 객체)
 
-    def test_eight_pages_registered(self):
-        import app  # noqa: F401
-        import dash
-        pages = list(dash.page_registry.keys())
-        # P1-d (Tier 1.5) 에서 devices/orders 페이지가 추가되어 8 개.
-        assert len(pages) == 8, f"expected 8 pages, got {len(pages)}: {pages}"
+    def test_app_is_flask_instance(self):
+        import app as app_module
+        from flask import Flask
+        assert isinstance(app_module.app, Flask)
 
-    def test_expected_page_paths(self):
-        import app  # noqa: F401
-        import dash
-        paths = {p["path"] for p in dash.page_registry.values()}
-        # 기존 4 개 (Analysis '/', Status, Reports, LSTM)
-        assert "/" in paths
-        assert "/status" in paths
-        assert "/reports" in paths
-        assert "/lstm" in paths
-        # P1-d 추가 2 개 (CMMS UI)
-        assert "/devices" in paths
-        assert "/orders" in paths
+    def test_core_routes_registered(self):
+        import app as app_module
+        rules = {r.rule for r in app_module.app.url_map.iter_rules()}
+        # auth blueprint
+        assert "/login" in rules
+        assert "/logout" in rules
+        # api blueprint
+        assert "/api/health" in rules
+        # SPA catch-all
+        assert "/" in rules
 
 
 # ===========================================================================

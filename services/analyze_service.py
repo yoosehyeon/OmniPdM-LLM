@@ -10,7 +10,6 @@ from services.input_validation_service import InputValidationService
 from services.llm_service import LlmService
 from services.llm_tools import ToolDispatcher
 from services.pdm_service import PdmService
-from services.plot_service import PlotService
 from services.report_service import ReportService
 from services.risk_service import RiskService
 from services.schemas import (
@@ -35,8 +34,8 @@ class AnalyzeService:
     5) LLM 생성
     6) Guardrail 검증
     7) Evaluation
-    8) Plot 생성
-    9) Report 생성
+    8) Report 생성
+    (시각화: PRD v7.0 부터 React frontend 가 raw explanation/risk dict 로 직접 렌더)
 
     추가된 LSTM 경로:
     - run_lstm()
@@ -56,7 +55,6 @@ class AnalyzeService:
         self.llm_service = LlmService()
         self.guardrail_service = GuardrailService()
         self.evaluation_service = EvaluationService(llm_service=self.llm_service)
-        self.plot_service = PlotService()
         self.report_service = ReportService()
 
         self.mode = mode
@@ -114,9 +112,6 @@ class AnalyzeService:
 
         evaluation = self.evaluation_service.evaluate(llm, pred=pred, risk=risk)
 
-        feature_plot = self.plot_service.build_feature_importance(exp)
-        sensor_plot = self.plot_service.build_sensor_snapshot(normalized_payload)
-
         report_markdown = self.report_service.generate(
             payload=normalized_payload,
             validation=validation,
@@ -152,8 +147,8 @@ class AnalyzeService:
             "validation_text": self._compose_validation_text("정상", saved_md),
             "summary_text": result.summary_text,
             "explanation_text": result.explanation_text,
-            "feature_plot": feature_plot,
-            "sensor_plot": sensor_plot,
+            "feature_plot": None,
+            "sensor_plot": None,
             "report_markdown": report_markdown,
             "raw_result": raw_result,
             "alert_text": "ALERT TRIGGERED"
@@ -193,9 +188,6 @@ class AnalyzeService:
 
         exp = self.explain_service.explain(normalized_payload, pred)
 
-        feature_plot = self.plot_service.build_feature_importance(exp)
-        sensor_plot = self.plot_service.build_sensor_snapshot(normalized_payload)
-
         summary_text = self._build_summary_text(pred, risk)
         explanation_text = self._build_scalar_explanation_text(exp)
         alert_text = (
@@ -208,8 +200,8 @@ class AnalyzeService:
             validation_text="정상",
             summary_text=summary_text,
             explanation_text=explanation_text,
-            feature_plot=feature_plot,
-            sensor_plot=sensor_plot,
+            feature_plot=None,
+            sensor_plot=None,
             alert_text=alert_text,
         )
 
@@ -374,11 +366,8 @@ class AnalyzeService:
 
         evaluation = self.evaluation_service.evaluate(llm, pred=pred, risk=risk)
 
-        feature_plot = self.plot_service.build_lstm_feature_importance(exp)
-        sensor_plot = self.plot_service.build_lstm_sequence_snapshot(
-            sequence=validation.normalized_sequence,
-            feature_names=validation.feature_names,
-        )
+        feature_plot = None
+        sensor_plot = None
 
         report_markdown = self.report_service.generate_lstm(
             asset_id=asset_id,
@@ -489,11 +478,8 @@ class AnalyzeService:
             rul_norm=pred.rul_norm,
         )
 
-        feature_plot = self.plot_service.build_lstm_feature_importance(exp)
-        sensor_plot = self.plot_service.build_lstm_sequence_snapshot(
-            sequence=validation.normalized_sequence,
-            feature_names=validation.feature_names,
-        )
+        feature_plot = None
+        sensor_plot = None
 
         summary_text = self._build_summary_text(pred, risk)
         explanation_text = exp.explanation_text
