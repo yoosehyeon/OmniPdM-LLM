@@ -210,19 +210,20 @@ class TestAuthGuard:
             data={"user_id": "alice", "password": "wonderland", "csrf_token": csrf},
         )
         r = client.get("/")
-        # Dash 페이지 자체가 200 (인증 통과). 콘텐츠는 검증 안 함.
-        assert r.status_code == 200
+        # PRD v7.0: / 는 React SPA(frontend/dist/index.html) 정적 서빙.
+        # 테스트 환경에 빌드 산출물이 없으면 503 (안내 페이지), 있으면 200.
+        # 핵심은 redirect(302) 가 아니라는 것 — 인증 가드 통과 확인.
+        assert r.status_code in (200, 503)
 
     def test_login_path_exempt(self, client):
         # /login 은 인증 없이도 200 (가드에서 제외).
         r = client.get("/login")
         assert r.status_code == 200
 
-    def test_dash_internal_path_exempt(self, client):
-        # _dash- prefix 는 가드에서 제외 — 404 일 수 있어도 302 가 아니어야 함.
-        r = client.get("/_dash-layout")
-        # Dash 가 처리 → 200 또는 404. redirect (302) 가 아니면 OK.
-        assert r.status_code != 302
+    def test_api_health_exempt(self, client):
+        # /api/health 는 가드에서 제외 — Docker healthcheck 용.
+        r = client.get("/api/health")
+        assert r.status_code == 200
 
 
 class TestLogout:
@@ -233,9 +234,9 @@ class TestLogout:
             "/login",
             data={"user_id": "alice", "password": "wonderland", "csrf_token": csrf},
         )
-        # 로그인 상태 확인 (인증 통과)
+        # 로그인 상태 확인 (인증 통과 — 빌드 산출물 유무에 따라 200/503).
         r_in = client.get("/")
-        assert r_in.status_code == 200
+        assert r_in.status_code in (200, 503)
 
         # logout
         r_logout = client.get("/logout")

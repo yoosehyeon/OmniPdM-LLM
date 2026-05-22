@@ -15,11 +15,18 @@ werkzeug 기본 hash 방식은 2024 년부터 scrypt — `scrypt:32768:8:1$<salt
 
 from __future__ import annotations
 
+import secrets
+
 from werkzeug.security import check_password_hash, generate_password_hash
 
 # T1.5 P0 seed admin 의 password_hash 컬럼에 들어있는 placeholder. 운영 진입 전 반드시
 # scripts/migrations/bootstrap_admin.py 로 교체해야 한다.
 PLACEHOLDER_HASH = "PLACEHOLDER_NOT_A_REAL_HASH_REPLACE_BEFORE_PRODUCTION"
+
+# Timing-flat dummy verify 용 random hash. 모듈 import 시 1회만 생성되며 사용자가 절대
+# 알 수 없는 무작위 평문에서 파생되어 어떤 입력에도 match 하지 않는다.
+# `dummy_verify` 가 user 미존재 분기에서 호출되어 scrypt 비용을 강제 발생시킨다.
+_DUMMY_HASH = generate_password_hash(secrets.token_urlsafe(32))
 
 
 def hash_password(plaintext: str) -> str:
@@ -57,3 +64,18 @@ def verify_password(stored_hash: str, plaintext: str) -> bool:
     if is_placeholder_hash(stored_hash):
         return False
     return check_password_hash(stored_hash, plaintext)
+
+
+def dummy_verify(plaintext: str) -> None:
+    """Timing-flat dummy — user 미존재 분기에서 호출. 결과는 무시.
+
+    `verify_password(PLACEHOLDER_HASH, ...)` 는 placeholder 분기로 즉시 False 라
+    scrypt 가 실행되지 않아 user 존재 분기와 wall-clock 차이가 생긴다. 본 함수는
+    실제 random scrypt hash 에 대해 check_password_hash 를 강제로 1회 실행해
+    timing 평탄화 — 결과는 항상 False, 호출자는 결과 무시.
+    """
+    if not isinstance(plaintext, str) or not plaintext:
+        # 빈 평문은 어차피 일찍 거부 — scrypt 실행 안 함. 이 분기는 호출자에서
+        # 도달하지 않게 가드되어야 하지만, safety net.
+        return
+    check_password_hash(_DUMMY_HASH, plaintext)

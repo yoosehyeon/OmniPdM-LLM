@@ -1,390 +1,421 @@
-# OmniPdM — All-in-One Predictive Maintenance System with LLM Analysis
+# OmniPdM — All-in-One Predictive Maintenance System
 
-> 이전 코드네임 **HybridPdM**. 2026-05-19 부로 GitHub 저장소(`OmniPdM-LLM`) + 로컬 디렉터리(`OmniPdM/`) 모두 새 이름으로 통합. 제품/문서 표기는 **OmniPdM** 으로 통일.
-> - 의미: "Omni-" = 모든 것/전체. 다종 산업 설비(Milling / Bearing / Hydraulic / Turbofan 등) 센서 데이터를 단일 플랫폼으로 통합, 예측~LLM 설명까지 풀스택 PdM.
-> - 로고: [assets/omnipdm_logo.png](assets/omnipdm_logo.png) — Dark Gray + Neon Green, ∞(인피니티) 회로 라인.
-> - 브랜드/네이밍 정당성은 [PRD.md](PRD.md) §0 참고.
+> 스마트팩토리 다종 설비를 단일 플랫폼으로 통합하여 사전 예측 + XAI + LLM 한국어 의사결정 지원을 제공하는 예지보전 시스템.
 
-산업설비 예지보전(Predictive Maintenance)을 위한 하이브리드 파이프라인.
-정형 센서 데이터(스칼라 / 시계열)를 입력받아 딥러닝 기반 고장·이상·RUL 예측을 수행하고,
-위험도 평가 + 설명(Feature Importance / Attention) + **LLM 한국어 분석 코멘트**까지 단일 흐름으로 제공합니다.
+[![Python](https://img.shields.io/badge/Python-3.10+-3776ab?logo=python&logoColor=white)](https://www.python.org/)
+[![Tests](https://img.shields.io/badge/tests-84%2F84%20passed-22ff88)](#테스트)
+[![Docker](https://img.shields.io/badge/Docker-multi--stage-2496ed?logo=docker&logoColor=white)](./Dockerfile)
+[![PRD](https://img.shields.io/badge/PRD-v7.0-22ff88)](./PRD.md)
 
-UI는 **Dash multi-page**, 실험 추적은 **MLflow**, 학습 진입점은 `scripts/training/main.py`로 분리되어 있습니다.
-
----
-
-## 주요 기능
-
-- **스칼라 입력 분석**: 단일 시점 센서 벡터 → 고장 확률 + 위험 등급 + 설명 + LLM 코멘트
-- **시계열 분석 (BiLSTM / DLinear / iTransformer)**: 다변량 시계열 → RUL 예측 + Attention/Temporal 설명
-- **이상 탐지 (Denoising AE)**: 정상 데이터 기반 재구성 오차로 이상 점수 산출
-- **Risk Scoring**: `weighted` / `noisy_or` / `max` 3가지 융합 + 동적 가중치
-- **LLM 분석 코멘트**: 상태 요약 / 의심 원인 / 권장 조치 3섹션 한국어 리포트 (Groq Llama 3.3 70B)
-- **Guardrail**: 금지 표현 정규식 치환 + 3섹션 구조 검증 + 안전 fallback
-- **Evaluation**: 구조 점수 + (옵션) LLM-as-Judge
-- **학술 metric 보강**: NASA PHM Score (RUL asymmetric), Confusion Matrix, PR-AUC, ROC-AUC, False Alarm Rate
-- **Multi-seed 재현성**: `--seeds 42 43 44` CLI 지원, MLflow 태그로 자동 비교
-- **Report**: Markdown + JSON 보고서 자동 저장 / 브라우저 조회
-- **MLflow 실험 추적**: 학습 파라미터 + 평가 메트릭 + 모델 family / FD subset / seed 태그 자동 기록
+<p align="center">
+  <strong>∞ OmniPdM</strong> · <em>Dark Gray + Neon Green</em> · 옴니 피디엠
+</p>
 
 ---
 
-## 아키텍처
+## Overview
+
+OmniPdM은 스마트팩토리 SME(중소기업)를 위한 **온프레미스 친화적 예지보전 플랫폼**입니다. 6종 이상의 산업 데이터셋(밀링·베어링·유압·터보팬 엔진·음향)을 단일 파이프라인으로 통합하고, **RUL/Anomaly/Fault 사전 예측 + XAI 투명성 + LLM 한국어 코멘트** 3축을 모든 예측에 첨부하여 비숙련 운영자도 즉시 의사결정을 내릴 수 있도록 지원합니다.
+
+### 3대 차별점
+
+| 차별점 | 내용 |
+|---|---|
+| **사전 예측 중심** | RUL · Anomaly · Fault — 고장 발생 전 탐지 (NASA Score 의사결정 비용 metric) |
+| **XAI 투명성** | Feature Importance + Attention + Temporal — 모든 예측에 기여도 첨부 |
+| **LLM 한국어** | 상태 · 의심 원인 · 권장 조치 3 섹션 한국어 보고서 (Groq Llama 3.3 70B) |
+
+---
+
+## Core Architecture
+
+OmniPdM은 4 계층으로 구성됩니다.
+
+1. **Realtime Layer** — MQTT 워커 (paho-mqtt QoS=1) + NotifierChain + DbWriter
+2. **Services Layer** — `analyze · explain · llm · risk · guardrail · evaluation · report` (UI 무관 도메인)
+3. **API Layer** — Flask `/api/*` Blueprint 4종 (health · csrf · datasets · analyze) + 세션 인증 + RBAC
+4. **Presentation Layer** — React SPA (Vite + TypeScript + Tailwind + Recharts) 정적 서빙
 
 ```text
-[User Input]
-     ↓
-InputValidationService     ← 범위 / 타입 검증
-     ↓
-PdmService                 ← 모델 추론 (CNN / GBDT / AE / BiLSTM / DLinear / iTransformer)
-     ↓
-RiskService                ← 위험도 융합 (weighted / noisy_or / max)
-     ↓
-ExplainService             ← Feature Importance / Attention 추출
-     ↓
-LlmService                 ← System + Few-shot + CoT + Domain context
-     ↓
-GuardrailService           ← 금지 표현 치환 + 구조 검증 + fallback
-     ↓
-EvaluationService          ← 구조 점수 + (옵션) LLM-as-Judge
-     ↓
-PlotService / ReportService ← Plotly 차트 + Markdown 보고서
-     ↓
-[Dash UI (6 pages)]
+[설비 IoT]
+   │ MQTT / Kafka / OPC-UA
+   ▼
+[Realtime Worker] ──► [Services] ──┬──► [TimescaleDB]   telemetry · predictions · alerts · CMMS
+                                   ├──► [Notifier]       Slack / Email / Telegram
+                                   └──► [Flask /api/*] ──► [React SPA]
+                                                              ▲
+                                                       운영자 / 유지보수자 / 관리자
 ```
 
-서비스 계층(`services/`)은 UI 의존성이 없어 Dash / FastAPI / CLI 어디에서도 재사용 가능합니다.
+**핵심 설계 원칙**
+- **services/ 순수성** — UI 의존성 0, React/FastAPI/CLI 어디서나 재사용 가능
+- **API-first** — 모든 화면은 `/api/*` REST 만 호출, 모바일·서드파티 확장 용이
+- **단일 origin** — React build → Flask static serve, CORS·CSRF 단순화
+- **환경변수 중심** — `OMNIPDM_*` 로 dev/prod 전환 (Docker 단일 이미지)
 
 ---
 
-## 프로젝트 구조
+## Key Features
 
-```text
-OmniPdM/
-├── app.py                              # Dash multi-page 진입점
-├── requirements.txt
-├── .env.example
-├── PRD.md
-│
-├── pages/                              # Dash 6 페이지
-│   ├── _helpers.py                     # 공유 헬퍼 (싱글톤, 샘플 데이터)
-│   ├── analysis.py                     # Scalar 분석 (구현 완료)
-│   ├── lstm_analysis.py                # Sequence 분석 (placeholder)
-│   ├── diagnostics.py                  # 파이프라인 진단 (placeholder)
-│   ├── risk_simulator.py               # 위험도 슬라이더 (placeholder)
-│   ├── model_status.py                 # 체크포인트 상태 (구현 완료)
-│   └── report.py                       # 보고서 브라우저 (구현 완료)
-│
-├── services/                           # 도메인 서비스 계층 (UI 무관)
-│   ├── analyze_service.py              # 9 단계 오케스트레이션
-│   ├── input_validation_service.py
-│   ├── pdm_service.py
-│   ├── risk_service.py
-│   ├── explain_service.py
-│   ├── llm_service.py                  # Groq + Streaming + Function Calling
-│   ├── llm_tools.py                    # 5 tools + ToolDispatcher
-│   ├── guardrail_service.py
-│   ├── evaluation_service.py
-│   ├── plot_service.py                 # Plotly Figure 반환
-│   ├── report_service.py
-│   └── schemas.py
-│
-├── models_core/                        # 모델 / 데이터 런타임
-│   ├── config.py                       # LSTM_CFG, DLINEAR_CFG, ITRANSFORMER_CFG, NCMAPSS_LSTM_CFG
-│   ├── models.py                       # WDCNN1D / TabularCNN1D / AE / BiLSTM / DLinear / iTransformer
-│   ├── data_pipeline.py                # 6+ dataset_key + FD001~004 별칭 loaders
-│   ├── risk_score.py                   # weighted / noisy_or / max 융합
-│   ├── _archive/                       # 미사용 코드 보관 (Captum 등)
-│   └── artifacts/
-│       ├── checkpoints/                # 학습된 가중치 (gitignored)
-│       └── reports/                    # 자동 저장 보고서 (gitignored)
-│
-├── scripts/
-│   ├── run_ngrok.py                    # (선택) ngrok 외부 공유
-│   ├── export_checkpoint_meta.py
-│   ├── upload_checkpoints_to_hf.py
-│   └── training/                       # 학습 / 평가 / 분석 (런타임 분리)
-│       ├── main.py                     # 학습 진입점 (MLflow + multi-seed)
-│       ├── train.py                    # TRAINERS, EarlyStopping, set_seed_suffix
-│       ├── evaluate.py                 # EVALUATORS + NASA Score + Confusion + PR-AUC
-│       ├── reeval.py                   # 학습 없이 기존 체크포인트 재평가
-│       ├── analyze_results.py          # MLflow 결과 mean±std + 3-way 비교
-│       ├── compute_efficiency.py       # latency / memory / param 벤치마크
-│       └── mlflow_logger.py            # MLflow wrapper
-│
-├── prompts/
-│   └── system_pdm_assistant.txt
-│
-├── notebooks/
-│   ├── sensor_correlation_analysis.ipynb   # iTransformer 정당화 분석
-│   └── multiseed_3way_comparison.ipynb     # 3-way 모델 비교 시각화 (7개 차트)
-│
-└── tests/
-    ├── test_smoke.py                   # Dash boot + Services smoke
-    ├── test_validation_step.py
-    ├── test_pdm_lstm_step.py
-    ├── test_llm_stream_step.py
-    └── test_analyze_lstm_step.py
-```
-
-데이터셋 원본, 체크포인트, 보고서, 로그, MLflow DB는 저장소에 포함되지 않습니다.
+| 기능 | 목적 | Endpoint / 모듈 |
+|---|---|---|
+| **Health Probe** | Liveness/Readiness (Docker healthcheck) | `GET /api/health` |
+| **Dataset Catalog** | 5종 dataset 메타 (SSOT, slider 명세) | `GET /api/datasets` |
+| **CSRF Token** | per-session 토큰 발급 (OWASP Synchronizer) | `GET /api/csrf` |
+| **Analyze Pipeline** | 8 단계 오케스트레이션 (scalar + sequence) | `POST /api/analyze` |
+| **Auth & RBAC** | Flask session + werkzeug scrypt + role guard | `POST /login`, `GET /logout` |
+| **Realtime Worker** | MQTT subscribe → predict → DB + alarm | `services/realtime/mqtt_worker.py` |
+| **LLM + Guardrail** | Groq Llama 3.3 70B + 금지표현 치환 + Judge | `services/llm_service.py` |
+| **XAI Explanation** | Integrated Gradients + Attention + Temporal | `services/explain_service.py` |
+| **CMMS** | devices · orders · status_history · audit_log | `services/realtime/*_service.py` |
+| **MLflow Tracking** | 학습 run 파라미터/메트릭/태그 비교 | `mlflow ui` (:5000) |
 
 ---
 
-## 설치
+## Technology Stack
 
-요구사항: Python 3.10+
+**Frontend**
+![React](https://img.shields.io/badge/React-18-61dafb?logo=react&logoColor=white)
+![Vite](https://img.shields.io/badge/Vite-6-646cff?logo=vite&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6?logo=typescript&logoColor=white)
+![Tailwind](https://img.shields.io/badge/Tailwind-3-06b6d4?logo=tailwindcss&logoColor=white)
+![Recharts](https://img.shields.io/badge/Recharts-2-22ff88)
+
+**Backend**
+![Flask](https://img.shields.io/badge/Flask-3-000000?logo=flask&logoColor=white)
+![Gunicorn](https://img.shields.io/badge/Gunicorn-22-499848?logo=gunicorn&logoColor=white)
+![PyTorch](https://img.shields.io/badge/PyTorch-2-ee4c2c?logo=pytorch&logoColor=white)
+![scikit--learn](https://img.shields.io/badge/scikit--learn-1.3-f7931e?logo=scikitlearn&logoColor=white)
+
+**LLM / Tracking**
+![Groq](https://img.shields.io/badge/Groq-Llama_3.3_70B-f55036)
+![MLflow](https://img.shields.io/badge/MLflow-2-0194e2?logo=mlflow&logoColor=white)
+
+**Data / Realtime**
+![TimescaleDB](https://img.shields.io/badge/TimescaleDB-Postgres_16-fdb515?logo=postgresql&logoColor=white)
+![Mosquitto](https://img.shields.io/badge/Mosquitto-MQTT_v2-3c5280)
+![psycopg](https://img.shields.io/badge/psycopg-3-336791)
+
+**Infra**
+![Docker](https://img.shields.io/badge/Docker-multi--stage-2496ed?logo=docker&logoColor=white)
+![pytest](https://img.shields.io/badge/pytest-9-0a9edc?logo=pytest&logoColor=white)
+
+---
+
+## Quick Start
+
+### Prerequisites
+
+- Python **3.10+**
+- Node.js **20+** (frontend 빌드)
+- Docker & Docker Compose (선택, 운영 환경)
+- (선택) Groq API key — [console.groq.com](https://console.groq.com/keys)
+
+### 1) Clone & 환경 설정
 
 ```bash
 git clone https://github.com/yoosehyeon/OmniPdM-LLM.git OmniPdM
 cd OmniPdM
 
+# Python venv
 python -m venv .venv
-# Windows
-.venv\Scripts\activate
-# macOS / Linux
-source .venv/bin/activate
+.venv\Scripts\activate           # Windows
+source .venv/bin/activate         # macOS/Linux
 
 pip install -r requirements.txt
+
+# .env 생성 (Groq key 등 채움)
+cp .env.example .env
 ```
 
-### 환경변수
-
-`.env.example` → `.env` 복사 후 값 입력.
-
-| 변수 | 기본값 | 설명 |
-|------|--------|------|
-| `GROQ_API_KEY` | - | Groq Cloud 발급. 미설정 시 LLM 코멘트는 rule-based fallback |
-| `GROQ_MODEL` | `llama-3.3-70b-versatile` | 사용할 모델 |
-| `GROQ_TEMPERATURE` | `0.2` | 기본 temperature (위험등급별 동적 조정됨) |
-| `GROQ_MAX_TOKENS` | `800` | 응답 최대 토큰 |
-| `GROQ_BASE_URL` | `https://api.groq.com/openai/v1` | OpenAI 호환 endpoint |
-| `PROMPT_DIR` | `prompts` | 시스템 프롬프트 디렉터리 |
-| `ENABLE_LLM_JUDGE` | `0` | `1` 설정 시 LLM-as-Judge 활성화 |
-| `ENABLE_LLM_STREAM` | `0` | `1` 설정 시 토큰 스트리밍 사용 |
-| `ENABLE_LLM_TOOLS` | `0` | `1` 설정 시 Function Calling 5 tools 활성화 |
-| `CHECKPOINT_REPO` | `yusehyeon/hybridpdm-checkpoints` | HF Hub fallback (로컬 우선) |
-| `DASH_HOST` | `0.0.0.0` | Dash 서버 호스트 |
-| `DASH_PORT` | `8050` | Dash 서버 포트 |
-| `DASH_DEBUG` | `false` | Dash debug 모드 |
-| `DISABLE_MLFLOW` | `0` | `1` 설정 시 MLflow 추적 비활성화 |
-| `MLFLOW_TRACKING_URI` | `sqlite:///mlflow.db` | MLflow 백엔드 (PostgreSQL 가능) |
-
----
-
-## 실행
-
-### Dash UI
+### 2) 개발 모드 (Vite HMR + Flask)
 
 ```bash
+# 터미널 1 — Flask 백엔드 (:8050)
 python app.py
+
+# 터미널 2 — React dev server (HMR, :5173)
+cd frontend
+npm install      # 최초 1회
+npm run dev
 ```
 
-기본 접속: `http://localhost:8050`
+브라우저: **http://localhost:5173** — Vite 가 `/api/*` 를 Flask 로 프록시.
 
-페이지:
-- `/` — Analysis (Scalar 입력, 구현 완료)
-- `/lstm` — LSTM Analysis (구현 예정)
-- `/diagnostics` — Diagnostics (구현 예정)
-- `/risk` — Risk Simulator (구현 예정)
-- `/status` — Model Status (구현 완료)
-- `/reports` — Report Browser (구현 완료)
-
-### 학습
+### 3) 프로덕션 빌드 (단일 origin)
 
 ```bash
-# 전체 데이터셋 1 epoch smoke
-python -m scripts.training.main --smoke --skip-explain
-
-# 특정 데이터셋만 본 학습 (default seed=42)
-python -m scripts.training.main --datasets ai4i_cnn cmapss_lstm
-
-# C-MAPSS FD별 비교 (BiLSTM)
-python -m scripts.training.main \
-    --datasets cmapss_lstm_fd001 cmapss_lstm_fd002 cmapss_lstm_fd003 cmapss_lstm_fd004 \
-    --skip-explain
-
-# Multi-seed 재현성 학습 (seed 42, 43, 44)
-python -m scripts.training.main \
-    --datasets cmapss_lstm cmapss_dlinear cmapss_itransformer \
-    --seeds 42 43 44 \
-    --skip-explain
-
-# 모든 데이터셋 + 모든 모델 (장시간)
-python -m scripts.training.main
+cd frontend && npm run build
+cd .. && python app.py
+# 접속: http://localhost:8050
 ```
 
-### 재평가 (학습 없이 새 metric만)
-
-evaluate.py에 새 metric (NASA Score 등)을 추가한 후 기존 체크포인트로 재계산:
+### 4) Docker (DB + MQTT 포함)
 
 ```bash
-python -m scripts.training.reeval
-# 또는 특정 데이터셋만
-python -m scripts.training.reeval --datasets cmapss_lstm cmapss_dlinear
-```
-
-별도 MLflow experiment `hybridpdm_reeval` 에 기록 (기존 학습 run 보존).
-
-### 결과 분석 (Multi-seed mean±std + 3-way 비교)
-
-```bash
-python -m scripts.training.analyze_results
-# CSV 저장
-python -m scripts.training.analyze_results --csv
-# 다른 metric 기준
-python -m scripts.training.analyze_results --metric nasa_score_sum
-```
-
-출력:
-- 모든 run 표
-- `model × subset` mean±std (n=seed 개수)
-- BiLSTM 기준 격차 % (DLinear / iTransformer)
-- 자동 인사이트 (best/worst FD, variance 큰 subset)
-- JSON 저장
-
-### Compute Efficiency 벤치마크 (latency / memory / params)
-
-```bash
-python -m scripts.training.compute_efficiency
-# 재현성 우선 (단일 스레드)
-python -m scripts.training.compute_efficiency --single-thread
-# GPU
-python -m scripts.training.compute_efficiency --device cuda
-```
-
-3개 RUL 모델(BiLSTM / DLinear / iTransformer)을 C-MAPSS (F=14) + N-CMAPSS (F=43) 차원에서 측정. MLflow `hybridpdm_efficiency` experiment 기록.
-
-### MLflow UI
-
-```bash
-mlflow ui
-```
-
-기본 접속: `http://localhost:5000`. 모든 학습 run 의 파라미터 / 메트릭 / 태그 비교 가능.
-
-### ngrok 외부 공유 (선택)
-
-```bash
-python scripts/run_ngrok.py
+docker compose up -d              # app + timescaledb + mosquitto
+docker compose logs -f app
+docker compose down -v            # 정리
 ```
 
 ---
 
-## 데이터셋
-
-본 프로젝트는 아래 공개 데이터셋을 사용합니다. 저장소에 포함되어 있지 않으므로 직접 다운로드 후 `models_core/dataset/` 하위 배치.
-
-| 데이터셋 | 설명 | 다운로드 |
-|---------|------|---------|
-| **NASA C-MAPSS** | Turbofan Engine Degradation Simulation (RUL, FD001~FD004) | [NASA PCoE](https://www.nasa.gov/intelligent-systems-division/discovery-and-systems-health/pcoe/pcoe-data-set-repository/) |
-| **NASA N-CMAPSS** | Turbofan Degradation Simulation-2 (실측 비행 조건, 43 features) | [NASA PCoE](https://www.nasa.gov/intelligent-systems-division/discovery-and-systems-health/pcoe/pcoe-data-set-repository/) |
-| **AI4I 2020** | Milling machine predictive maintenance | [UCI ML Repository](https://archive.ics.uci.edu/dataset/601/ai4i+2020+predictive+maintenance+dataset) |
-| **Hydraulic Systems** | 유압 시스템 상태 모니터링 | [UCI ML Repository](https://archive.ics.uci.edu/dataset/447/condition+monitoring+of+hydraulic+systems) |
-| **PHM 2012 Bearing** | IEEE PHM 2012 (FEMTO-ST) | [GitHub: wkzs111/phm-ieee-2012](https://github.com/wkzs111/phm-ieee-2012-data-challenge-dataset) |
-| **CWRU Bearing** | Case Western Reserve Bearing Data | [CWRU Data Center](https://engineering.case.edu/bearingdatacenter) |
-
-배치 예시:
+## Project Structure
 
 ```text
-models_core/dataset/
-├── CMAPSSData/                                                # FD001~FD004
-├── 17. Turbofan Engine Degradation Simulation Data Set 2/    # N-CMAPSS
-├── ai4i2020.csv (또는 AI4I-PMDI.csv)
-├── condition+monitoring+of+hydraulic+systems/
-├── PHM2012/
-└── 10987113/                                                   # CWRU
+OmniPdM/
+├── app.py                              # Flask 진입점 + SPA 정적 서빙
+├── Dockerfile                          # multi-stage: node:20 → python:3.11
+├── docker-compose.yml                  # app + timescaledb + mosquitto
+├── PRD.md                              # Product Requirements v7.0
+│
+├── frontend/                           # React SPA (Vite + TS + Tailwind)
+│   ├── package.json
+│   ├── vite.config.ts                  # /api/* → :8050 proxy
+│   └── src/
+│       ├── App.tsx · main.tsx
+│       ├── csrf.ts                     # CSRF singleton + postWithCsrf
+│       ├── data.ts                     # fetchDatasets(), CORE_MODELS, SAMPLE_HISTORY
+│       ├── types.ts                    # 도메인 타입
+│       ├── components/                 # Navbar · KpiCard · LlmCard · RiskGauge
+│       └── pages/                      # Home · Analysis · Diagnostics · Simulator · Reports
+│
+├── services/                           # 도메인 서비스 (UI 무관)
+│   ├── api/                            # Flask Blueprint
+│   │   ├── health.py · csrf.py · datasets.py · analyze.py
+│   │   └── _sequence_synth.py
+│   ├── analyze_service.py              # 8 단계 오케스트레이션
+│   ├── pdm_service.py                  # CNN / GBDT / AE / BiLSTM / DLinear / iTransformer
+│   ├── risk_service.py                 # weighted / noisy_or / max 융합
+│   ├── explain_service.py              # XAI (Importance · Attention · Temporal)
+│   ├── llm_service.py                  # Groq + streaming + function calling
+│   ├── llm_tools.py                    # 5 tools + ToolDispatcher
+│   ├── guardrail_service.py · evaluation_service.py · report_service.py
+│   ├── input_validation_service.py · schemas.py
+│   ├── dataset_catalog.py              # SSOT — UI 슬라이더 메타
+│   ├── auth/                           # passwords · sessions · routes · users
+│   └── realtime/                       # mqtt_worker · db_writer · notifier · device · order
+│
+├── models_core/                        # 모델 / 데이터 런타임
+│   ├── config.py                       # LSTM_CFG, DLINEAR_CFG, ITRANSFORMER_CFG
+│   ├── models.py                       # WDCNN1D / TabularCNN1D / AE / BiLSTM / DLinear / iTransformer
+│   ├── data_pipeline.py                # 6+ dataset_key loaders
+│   └── risk_score.py
+│
+├── scripts/
+│   └── training/                       # main · train · evaluate · reeval · analyze_results
+│
+├── infra/
+│   ├── timescaledb/                    # init.sql + 001_cmms_schema.sql
+│   └── mosquitto/                      # mosquitto.conf
+│
+└── tests/                              # 84 tests, 외부 의존 0
+    ├── test_smoke.py · test_validation_step.py
+    ├── test_api_health.py · test_api_csrf.py · test_api_datasets.py · test_api_analyze.py
+    ├── test_auth_sessions.py · test_passwords.py
+    ├── test_e2e_pipeline.py            # 통합 E2E
+    └── realtime/                       # mock + DB integration
 ```
-
-각 데이터셋의 라이선스·인용 조건은 원 제공처 정책을 따르십시오.
 
 ---
 
-## 모델
+## Configuration
 
-### Dataset Keys (PIPELINE)
+`.env.example` 을 `.env` 로 복사 후 값 입력. **상세 변수는 `.env.example` 참조.**
+
+### Flask + 인증
+
+| 변수 | 기본 | 설명 |
+|---|---|---|
+| `OMNIPDM_HOST` | `0.0.0.0` | Flask bind host |
+| `OMNIPDM_PORT` | `8050` | Flask bind port |
+| `OMNIPDM_DEBUG` | `false` | Flask debug 모드 |
+| `OMNIPDM_SECRET_KEY` | (random) | 세션 쿠키 서명. **운영 필수** |
+| `OMNIPDM_AUTH_REQUIRED` | `true` | `false` 시 가드 비활성 (dev/test) |
+| `OMNIPDM_SESSION_COOKIE_SECURE` | `false` | HTTPS 운영 시 `true` |
+
+### LLM (Groq)
+
+| 변수 | 기본 | 설명 |
+|---|---|---|
+| `GROQ_API_KEY` | — | 미설정 시 rule-based fallback |
+| `GROQ_MODEL` | `llama-3.3-70b-versatile` | |
+| `GROQ_TEMPERATURE` | `0.2` | 위험등급별 동적 조정됨 |
+| `ENABLE_LLM_JUDGE` | `0` | `1` 시 LLM-as-Judge 활성 |
+| `ENABLE_LLM_STREAM` | `0` | `1` 시 토큰 스트리밍 |
+| `ENABLE_LLM_TOOLS` | `0` | `1` 시 Function Calling 5 tools |
+
+### Data / Realtime
+
+| 변수 | 기본 | 설명 |
+|---|---|---|
+| `OMNIPDM_DB_HOST` | `127.0.0.1` | docker 사용 시 `timescaledb` |
+| `OMNIPDM_MQTT_HOST` | `localhost` | docker 사용 시 `mosquitto` |
+| `OMNIPDM_ALERT_MIN_LEVEL` | `Critical` | Critical/Warning 만 외부 알람 |
+| `DISABLE_MLFLOW` | `0` | `1` 시 MLflow 비활성 |
+
+---
+
+## Datasets
+
+`models_core/dataset/` 하위 배치. 라이선스는 각 제공처 정책을 따름.
+
+| 데이터셋 | 설명 | 다운로드 |
+|---|---|---|
+| **NASA C-MAPSS** | Turbofan RUL (FD001~FD004) | [NASA PCoE](https://www.nasa.gov/intelligent-systems-division/discovery-and-systems-health/pcoe/pcoe-data-set-repository/) |
+| **NASA N-CMAPSS** | 실측 비행 조건, 43 features | [NASA PCoE](https://www.nasa.gov/intelligent-systems-division/discovery-and-systems-health/pcoe/pcoe-data-set-repository/) |
+| **AI4I 2020** | Milling machine PdM | [UCI ML](https://archive.ics.uci.edu/dataset/601/ai4i+2020+predictive+maintenance+dataset) |
+| **Hydraulic Systems** | 유압 상태 모니터링 | [UCI ML](https://archive.ics.uci.edu/dataset/447/condition+monitoring+of+hydraulic+systems) |
+| **PHM 2012 Bearing** | IEEE PHM 2012 (FEMTO-ST) | [GitHub](https://github.com/wkzs111/phm-ieee-2012-data-challenge-dataset) |
+| **CWRU Bearing** | Case Western Reserve | [CWRU Data Center](https://engineering.case.edu/bearingdatacenter) |
+
+---
+
+## Models
+
+### Dataset Keys × 모델
 
 | dataset_key | Task | 모델 | 파라미터 (F=14, L=30) |
 |---|---|---|---|
-| `ai4i_cnn` | 이진 분류 | TabularCNN1D | — |
-| `ai4i_gbdt` | 이진 분류 | GBDT (sklearn HistGradientBoosting) | — |
-| `cwru_cnn` | 다중 분류 (10-class) | WDCNN1D (Wide-kernel CNN) | — |
+| `ai4i_cnn` / `ai4i_gbdt` | 이진 분류 | TabularCNN1D / HistGradientBoosting | — |
+| `cwru_cnn` | 10-class 분류 | WDCNN1D (Wide-kernel) | — |
 | `hydraulic_ae` | 이상 탐지 | Denoising AE | — |
-| `cmapss_lstm` / `cmapss_lstm_fd001~fd004` | RUL 회귀 | BiLSTM + Attention | **551,234** |
-| `cmapss_dlinear` / `cmapss_dlinear_fd001~fd004` | RUL 회귀 | **DLinear** | **883** |
-| `cmapss_itransformer` / `cmapss_itransformer_fd001~fd004` | RUL 회귀 | **iTransformer** | **401,026** |
-| `ncmapss_lstm` | RUL 회귀 | BiLSTM + Attention (43 features, hidden=256) | — |
-| `ncmapss_dlinear` | RUL 회귀 | DLinear | — |
-| `ncmapss_itransformer` | RUL 회귀 | iTransformer | — |
+| `cmapss_lstm_*` | RUL 회귀 | **BiLSTM + Attention** | **551,234** |
+| `cmapss_dlinear_*` | RUL 회귀 | **DLinear** | **883** |
+| `cmapss_itransformer_*` | RUL 회귀 | **iTransformer** | **401,026** |
+| `ncmapss_*` | RUL 회귀 | 위 3종 (43 features, hidden=256) | — |
 
-### RUL 회귀 모델 비교 (C-MAPSS FD001~FD004, multi-seed)
+### RUL 모델 비교
 
 | 모델 | 설계 철학 | 강점 | 약점 |
 |---|---|---|---|
-| **BiLSTM + Attention** | Temporal recurrence + 시점 가중 | dynamic change 강한 FD (003, 001) 우수 | 파라미터 많음 |
-| **DLinear** | Trend + Seasonal 분해 + 채널 독립 | 매우 작음 (883), 안정적 (std 0.07~0.15) | 모든 FD에서 +22~32% RMSE 손해 |
-| **iTransformer** | Variate tokenization + Cross-channel attention | mean \|corr\| 강한 FD (002, 004) 기대 | 시변 강한 FD에선 BiLSTM에 근소 열세 |
+| **BiLSTM + Attention** | Temporal recurrence + 시점 가중 | dynamic FD (003/001) 우수 | 파라미터 많음 |
+| **DLinear** | Trend+Seasonal 분해, 채널 독립 | 매우 가벼움 (883), 안정 (std 0.07~0.15) | +22~32% RMSE 손해 |
+| **iTransformer** | Variate token + Cross-channel attn | corr 강한 FD (002/004) 기대 | 시변 강한 FD 근소 열세 |
 
-논문:
-- **DLinear**: [Zeng et al. 2023, "Are Transformers Effective for Time Series Forecasting?"](https://arxiv.org/abs/2205.13504)
-- **iTransformer**: [Liu et al. 2024 ICLR, "iTransformer: Inverted Transformers Are Effective for Time Series Forecasting"](https://arxiv.org/abs/2310.06625)
+📄 [Zeng et al. 2023, DLinear](https://arxiv.org/abs/2205.13504) · [Liu et al. 2024 ICLR, iTransformer](https://arxiv.org/abs/2310.06625)
 
 ---
 
-## 평가 메트릭
+## Evaluation Metrics
 
-### 분류 (AI4I, CWRU)
-- Accuracy, Precision, Recall, F1
-- **Confusion Matrix** (TP/FP/FN/TN, False Alarm Rate)
-- **PR-AUC, ROC-AUC** (불균형 데이터 평가)
+| 카테고리 | 메트릭 |
+|---|---|
+| **분류** (AI4I, CWRU) | Accuracy · Precision · Recall · F1 · Confusion Matrix · **PR-AUC / ROC-AUC** |
+| **RUL 회귀** (C-MAPSS, N-CMAPSS) | RMSE · MAE · R² · **NASA PHM Score** (asymmetric, late prediction 강 패널티) |
+| **이상 탐지** (Hydraulic) | F1 · Precision · Recall · Percentile grid search (85~99) · Mahalanobis |
 
-### RUL 회귀 (C-MAPSS, N-CMAPSS)
-- RMSE, MAE, R²
-- **NASA PHM Score** (asymmetric scoring function, late prediction 강한 패널티 — RUL 의사결정 비용 metric)
-  - d = pred - true
-  - d ≥ 0 (late): exp(d/10) - 1
-  - d < 0 (early): exp(-d/13) - 1
-
-### 이상 탐지 (Hydraulic)
-- F1, Precision, Recall
-- Percentile grid search (85~99) + Mahalanobis distance 임계값 최적화
+NASA PHM Score 공식:
+```
+d = pred - true
+d ≥ 0 (late):  exp(d/10)  - 1
+d <  0 (early): exp(-d/13) - 1
+```
 
 ---
 
-## 분석 노트북
+## Training
 
-- `notebooks/sensor_correlation_analysis.ipynb` — C-MAPSS FD001~FD004 sensor 간 cross-correlation + dynamic change + RUL Mutual Information 분석. iTransformer 도입 정당화 근거.
-- `notebooks/multiseed_3way_comparison.ipynb` — BiLSTM / DLinear / iTransformer 3-way 비교 시각화 (7개 차트: RMSE/NASA bar, multi-seed box plot, correlation 예측 검증 산점도, parameter trade-off, model selection heatmap 등).
+```bash
+# Smoke (전체 dataset, 1 epoch)
+python -m scripts.training.main --smoke --skip-explain
+
+# 본 학습 (특정 dataset)
+python -m scripts.training.main --datasets ai4i_cnn cmapss_lstm
+
+# Multi-seed 재현성
+python -m scripts.training.main \
+    --datasets cmapss_lstm cmapss_dlinear cmapss_itransformer \
+    --seeds 42 43 44 --skip-explain
+
+# 학습 없이 새 metric 재계산
+python -m scripts.training.reeval --datasets cmapss_lstm
+
+# 결과 분석 (mean±std + 3-way 비교)
+python -m scripts.training.analyze_results --csv
+
+# Compute Efficiency 벤치마크
+python -m scripts.training.compute_efficiency
+
+# MLflow UI
+mlflow ui   # http://localhost:5000
+```
 
 ---
 
 ## 테스트
 
 ```bash
-# Smoke (Dash boot + Services fallback 경로)
-pytest tests/test_smoke.py -v
+# 전체 (84 tests)
+pytest tests/ -v --ignore=tests/manual --ignore=tests/realtime
 
-# 개별 step 테스트
-pytest tests/test_validation_step.py -v
-pytest tests/test_pdm_lstm_step.py -v
-pytest tests/test_analyze_lstm_step.py -v
-pytest tests/test_llm_stream_step.py -v
+# 카테고리별
+pytest tests/test_smoke.py -v               # Flask boot + Services
+pytest tests/test_api_*.py -v               # /api/health · csrf · datasets · analyze
+pytest tests/test_auth_sessions.py -v       # 로그인 + RBAC
+pytest tests/test_e2e_pipeline.py -v        # E2E (login → CSRF → analyze)
+
+# 실시간 (DB integration — OMNIPDM_TEST_DB_URL 설정 시)
+pytest tests/realtime/ -v
+
+# 수동 step (직접 실행)
+python -m tests.manual.pdm_lstm_step
+python -m tests.manual.analyze_lstm_step
+python -m tests.manual.llm_stream_step
 ```
 
----
-
-## 향후 로드맵
-
-- **남은 UI 페이지**: LSTM Analysis / Diagnostics / Risk Simulator 완성
-- **N-CMAPSS 전체 비교**: BiLSTM + DLinear + iTransformer 학습 + 분석
-- **AI4I CNN recall 개선**: Focal loss tuning, class-balanced sampling (현재 recall 0.706 → 0.85+ 목표)
-- **이상 탐지 강화**: VAE + Isolation Forest 앙상블 (Hydraulic F1 0.83 → 0.90+ 기대)
-- **추가 모델**: PatchTST + channel-mixing, TCN, TFT (외부 GPU 환경)
-- **인프라**: Docker Compose (Dash + Postgres) → PostgreSQL 마이그레이션 → FastAPI 분리 → 실시간 워커 (MQTT/Kafka)
-- **CPU 가속**: Intel Extension for PyTorch (IPEX), `torch.compile()`
+**CI 외부 의존 0** — DB/MQTT/모델 체크포인트 부재 환경에서도 통과.
 
 ---
 
-## 라이선스
+## Security Standards
 
-사용한 공개 데이터셋의 라이선스는 각 제공처 정책을 따릅니다. 코드 라이선스는 추후 결정.
+| 항목 | 구현 |
+|---|---|
+| **CSRF** | per-session token (`secrets.token_urlsafe(32)`) + `X-CSRF-Token` 헤더 + Cache-Control no-store |
+| **Session** | HttpOnly · SameSite=Lax · Secure (운영) — OWASP Session Mgmt 준수 |
+| **Password** | werkzeug scrypt (3.x 기본) |
+| **RBAC** | `role_required` decorator — admin / operator / viewer |
+| **Audit Log** | 로그인 성공/실패, RBAC reject 전부 기록 (`audit_log` 테이블) |
+| **Validation** | Sensor range/type + SSOT key whitelist (`dataset_catalog`) |
+
+---
+
+## Roadmap
+
+**Phase 2** (트리거 조건 충족 시)
+- Grafana 재도입 (운영자 5명+ 또는 외부 시스템 연동 필요)
+- WebSocket 실시간 푸시 (현재 polling 충분)
+- FastAPI 분리 (Flask 처리량 한계 도달 시)
+- ONNX Edge 추론 (제조 현장 PLC 직배포)
+
+**Phase 3** (상용화)
+- SaaS 구독제 (설비당 월 과금)
+- 온프레미스 라이선스 + ERP/MES 연동 컨설팅
+- 다국어 (영/일/중) 확장
+
+**기술 부채 백로그**
+- N-CMAPSS 전체 비교 (BiLSTM + DLinear + iTransformer)
+- AI4I CNN recall 0.706 → 0.85+ (Focal loss + class-balanced sampling)
+- Hydraulic 이상 탐지 F1 0.83 → 0.90+ (VAE + Isolation Forest 앙상블)
+- CPU 가속 (Intel Extension for PyTorch, `torch.compile()`)
+
+---
+
+## Documentation
+
+- [`PRD.md`](./PRD.md) — Product Requirements v7.0
+- [`docs/DEV_GUIDE_REACT_MIGRATION.md`](./docs/DEV_GUIDE_REACT_MIGRATION.md) — Dash → React 마이그레이션 가이드
+- [`docs/PRESENTATION.md`](./docs/PRESENTATION.md) — 20-slide 발표자료
+
+---
+
+## License
+
+코드 라이선스는 추후 결정. 사용한 공개 데이터셋의 라이선스는 각 제공처 정책을 따릅니다.
+
+---
+
+<p align="center">
+  <sub><strong>OmniPdM</strong> — All-in-One PdM System · 유세현 (YU SEHYEON) · 2026</sub>
+</p>

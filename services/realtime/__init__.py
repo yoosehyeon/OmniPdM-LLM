@@ -15,6 +15,14 @@ from services.realtime.device_service import (
     TimescaleDeviceService,
     scope_required,
 )
+from services.realtime.maintenance_order_service import (
+    MaintenanceOrder,
+    MaintenanceOrderService,
+    NullMaintenanceOrderService,
+    ORDER_PRIORITIES,
+    ORDER_STATUSES,
+    TimescaleMaintenanceOrderService,
+)
 from services.realtime.mqtt_worker import MqttWorker, WorkerStats
 from services.realtime.notifier import (
     Notifier,
@@ -38,4 +46,10 @@ __all__ = [
     "NullDeviceService",
     "TimescaleDeviceService",
     "scope_required",
+    "MaintenanceOrder",
+    "MaintenanceOrderService",
+    "NullMaintenanceOrderService",
+    "TimescaleMaintenanceOrderService",
+    "ORDER_STATUSES",
+    "ORDER_PRIORITIES",
 ]
