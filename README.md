@@ -5,7 +5,6 @@
 [![Python](https://img.shields.io/badge/Python-3.10+-3776ab?logo=python&logoColor=white)](https://www.python.org/)
 [![Tests](https://img.shields.io/badge/tests-84%2F84%20passed-22ff88)](#테스트)
 [![Docker](https://img.shields.io/badge/Docker-multi--stage-2496ed?logo=docker&logoColor=white)](./Dockerfile)
-[![PRD](https://img.shields.io/badge/PRD-v7.0-22ff88)](./PRD.md)
 
 <p align="center">
   <strong>∞ OmniPdM</strong> · <em>Dark Gray + Neon Green</em> · 옴니 피디엠
@@ -15,7 +14,7 @@
 
 ## Overview
 
-OmniPdM은 스마트팩토리 SME(중소기업)를 위한 **온프레미스 친화적 예지보전 플랫폼**입니다. 6종 이상의 산업 데이터셋(밀링·베어링·유압·터보팬 엔진·음향)을 단일 파이프라인으로 통합하고, **RUL/Anomaly/Fault 사전 예측 + XAI 투명성 + LLM 한국어 코멘트** 3축을 모든 예측에 첨부하여 비숙련 운영자도 즉시 의사결정을 내릴 수 있도록 지원합니다.
+OmniPdM은 스마트팩토리 SME(중소기업)를 위한 **온프레미스 친화적 예지보전 플랫폼**입니다. 5종 산업 데이터셋(밀링·베어링·유압·터보팬 엔진 C-MAPSS/N-CMAPSS)을 단일 파이프라인으로 통합하고, **RUL/Anomaly/Fault 사전 예측 + XAI 투명성 + LLM 한국어 코멘트** 3축을 모든 예측에 첨부하여 비숙련 운영자도 즉시 의사결정을 내릴 수 있도록 지원합니다.
 
 ### 3대 차별점
 
@@ -167,7 +166,7 @@ OmniPdM/
 ├── app.py                              # Flask 진입점 + SPA 정적 서빙
 ├── Dockerfile                          # multi-stage: node:20 → python:3.11
 ├── docker-compose.yml                  # app + timescaledb + mosquitto
-├── PRD.md                              # Product Requirements v7.0
+├── .env.example                        # 환경변수 템플릿 (Configuration 표와 1:1 동기화)
 │
 ├── frontend/                           # React SPA (Vite + TS + Tailwind)
 │   ├── package.json
@@ -185,35 +184,47 @@ OmniPdM/
 │   │   ├── health.py · csrf.py · datasets.py · analyze.py
 │   │   └── _sequence_synth.py
 │   ├── analyze_service.py              # 8 단계 오케스트레이션
-│   ├── pdm_service.py                  # CNN / GBDT / AE / BiLSTM / DLinear / iTransformer
+│   ├── pdm_service.py                  # CNN / GBDT / AE / VAE / BiLSTM / DLinear / iTransformer
 │   ├── risk_service.py                 # weighted / noisy_or / max 융합
 │   ├── explain_service.py              # XAI (Importance · Attention · Temporal)
 │   ├── llm_service.py                  # Groq + streaming + function calling
 │   ├── llm_tools.py                    # 5 tools + ToolDispatcher
 │   ├── guardrail_service.py · evaluation_service.py · report_service.py
 │   ├── input_validation_service.py · schemas.py
-│   ├── dataset_catalog.py              # SSOT — UI 슬라이더 메타
+│   ├── audit_actions.py                # audit_log 적재 헬퍼 (psycopg)
+│   ├── dataset_catalog.py              # SSOT — UI 슬라이더 메타 (5 datasets)
 │   ├── auth/                           # passwords · sessions · routes · users
-│   └── realtime/                       # mqtt_worker · db_writer · notifier · device · order
+│   └── realtime/                       # mqtt_worker · db_writer · notifier · device_service · maintenance_order_service
 │
 ├── models_core/                        # 모델 / 데이터 런타임
-│   ├── config.py                       # LSTM_CFG, DLINEAR_CFG, ITRANSFORMER_CFG
-│   ├── models.py                       # WDCNN1D / TabularCNN1D / AE / BiLSTM / DLinear / iTransformer
-│   ├── data_pipeline.py                # 6+ dataset_key loaders
-│   └── risk_score.py
+│   ├── config.py                       # CNN/LSTM/DLINEAR/ITRANSFORMER/VAE CFG
+│   ├── models.py                       # WDCNN1D / TabularCNN1D / AE / VAE / BiLSTM / DLinear / iTransformer
+│   ├── data_pipeline.py                # 5종 loader (ai4i · cwru · hydraulic · cmapss · ncmapss)
+│   ├── risk_score.py
+│   └── dataset/                        # 원본 데이터 배치 위치
 │
 ├── scripts/
-│   └── training/                       # main · train · evaluate · reeval · analyze_results
+│   ├── training/                       # main · train · evaluate · reeval · reeval_ai4i_recall_threshold
+│   │                                   # train_anomaly_ensemble · analyze_results · compute_efficiency · mlflow_logger
+│   ├── realtime/                       # run_worker.py · mqtt_simulator.py
+│   ├── migrations/                     # bootstrap_admin.py
+│   ├── export_checkpoint_meta.py
+│   └── upload_checkpoints_to_hf.py
 │
 ├── infra/
-│   ├── timescaledb/                    # init.sql + 001_cmms_schema.sql
+│   ├── timescaledb/                    # init.sql + migrations/001_cmms_schema.sql
 │   └── mosquitto/                      # mosquitto.conf
+│
+├── notebooks/                          # multiseed_3way_comparison · sensor_correlation_analysis
+├── prompts/                            # system_pdm_assistant.txt (LLM system prompt)
+├── logs/                               # 런타임 로그 (gitignored)
 │
 └── tests/                              # 84 tests, 외부 의존 0
     ├── test_smoke.py · test_validation_step.py
     ├── test_api_health.py · test_api_csrf.py · test_api_datasets.py · test_api_analyze.py
     ├── test_auth_sessions.py · test_passwords.py
     ├── test_e2e_pipeline.py            # 통합 E2E
+    ├── manual/                         # 직접 실행 step 스크립트
     └── realtime/                       # mock + DB integration
 ```
 
@@ -266,7 +277,6 @@ OmniPdM/
 | **NASA N-CMAPSS** | 실측 비행 조건, 43 features | [NASA PCoE](https://www.nasa.gov/intelligent-systems-division/discovery-and-systems-health/pcoe/pcoe-data-set-repository/) |
 | **AI4I 2020** | Milling machine PdM | [UCI ML](https://archive.ics.uci.edu/dataset/601/ai4i+2020+predictive+maintenance+dataset) |
 | **Hydraulic Systems** | 유압 상태 모니터링 | [UCI ML](https://archive.ics.uci.edu/dataset/447/condition+monitoring+of+hydraulic+systems) |
-| **PHM 2012 Bearing** | IEEE PHM 2012 (FEMTO-ST) | [GitHub](https://github.com/wkzs111/phm-ieee-2012-data-challenge-dataset) |
 | **CWRU Bearing** | Case Western Reserve | [CWRU Data Center](https://engineering.case.edu/bearingdatacenter) |
 
 ---
@@ -399,14 +409,6 @@ python -m tests.manual.llm_stream_step
 - AI4I CNN recall 0.706 → 0.85+ (Focal loss + class-balanced sampling)
 - Hydraulic 이상 탐지 F1 0.83 → 0.90+ (VAE + Isolation Forest 앙상블)
 - CPU 가속 (Intel Extension for PyTorch, `torch.compile()`)
-
----
-
-## Documentation
-
-- [`PRD.md`](./PRD.md) — Product Requirements v7.0
-- [`docs/DEV_GUIDE_REACT_MIGRATION.md`](./docs/DEV_GUIDE_REACT_MIGRATION.md) — Dash → React 마이그레이션 가이드
-- [`docs/PRESENTATION.md`](./docs/PRESENTATION.md) — 20-slide 발표자료
 
 ---
 

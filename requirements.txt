@@ -1,43 +1,61 @@
+# OmniPdM 의존성 — PRD v7.0 (Flask + React SPA + 실시간 워커).
+# pip install -r requirements.txt
+#
+# CPU 전용 PyTorch 휠을 우선 사용 (NVIDIA 환경에서는 첫 줄 제거 + 표준 PyPI 사용).
 --extra-index-url https://download.pytorch.org/whl/cpu
 
-# Core ML
+# ─── Core ML ──────────────────────────────────────────────────────────────────
+# torch: BiLSTM / DLinear / iTransformer 추론 + 학습.
+# numpy 2.x 와 호환 (scikit-learn 1.7+, scipy 1.15+ 가 함께 동작).
 torch>=2.0
 numpy>=1.24
 pandas>=2.0
 scikit-learn>=1.3
+# HF Hub: services/pdm_service.py 의 체크포인트 fallback + scripts/upload_checkpoints_to_hf.py
 huggingface_hub>=0.24
 
-# Web app runtime — Flask 단독 (PRD v7.0, Dash 제거).
-# React SPA(frontend/dist/) 를 정적 서빙하며 /api/* REST 만 노출.
+# ─── Web app runtime (Flask + React SPA 정적 서빙) ─────────────────────────────
+# Dash 는 PRD v7.0 에서 제거됨. React build 산출물(frontend/dist/) 을 Flask 가 정적 서빙.
 flask>=3.0
 gunicorn>=22.0
-# werkzeug 은 Flask transitive 의존이지만, services/auth/passwords.py 가 직접
-# 사용하므로 명시. 3.x 부터 generate_password_hash 기본이 scrypt.
+# werkzeug 는 Flask transitive 의존이지만, services/auth/passwords.py 가 직접 호출하므로
+# 명시 (3.x 부터 generate_password_hash 기본 알고리즘이 scrypt).
 werkzeug>=3.0
 
-# LLM (Groq OpenAI-compatible)
+# ─── LLM (Groq, OpenAI 호환 endpoint) ──────────────────────────────────────────
+# services/llm_service.py 가 `from openai import OpenAI` 로 Groq base_url 에 연결.
 openai>=1.40
 
-# Experiment tracking
+# ─── Experiment tracking ──────────────────────────────────────────────────────
+# scripts/training/mlflow_logger.py — 모든 학습 run 의 파라미터/메트릭/태그 비교.
 mlflow>=2.16
 
-# Visualization (legacy matplotlib kept for training scripts only)
+# ─── Visualization (학습 스크립트 + 노트북 전용) ────────────────────────────────
+# 런타임 UI 는 React + Recharts. matplotlib 은 scripts/training/* 차트 + notebooks/* 만 사용.
 matplotlib>=3.7
 
-# Dataset loaders
-# - scipy: CWRU .mat 로더 (data_pipeline.py:262) — sklearn 의존성으로 자동 설치되지만 명시
-# - h5py: N-CMAPSS .h5 로더 (data_pipeline.py:596) — sklearn 으로 안 들어옴, 별도 필수
+# ─── Dataset loaders ──────────────────────────────────────────────────────────
+# scipy: CWRU .mat 로더 (sklearn 의존성으로 자동 설치되지만 직접 호출하므로 명시).
+# h5py:  N-CMAPSS .h5 로더 (sklearn 으로 안 들어옴, 별도 필수).
 scipy>=1.10
 h5py>=3.10
 
-# Tier 1 — Realtime worker (PRD v6.2 §10 T1-01). services/realtime/* 사용 시 필수.
-# T1-02 알람 채널은 stdout 기본. 외부 채널(Telegram/Email/Slack 등)을 붙일 때 해당 dep 추가.
+# ─── Realtime worker (Tier 1) ─────────────────────────────────────────────────
+# services/realtime/mqtt_worker.py — MQTT subscribe + alert.
+# 외부 알람 채널(Telegram/Email/Slack) 도입 시 해당 SDK 추가.
 paho-mqtt>=2.1
 
-# Tier 1 — DbWriter (PRD v6.3 §10 T1-03). TimescaleDbWriter 사용 시 필수.
-# psycopg[binary] = libpq 자동 포함, Windows 에서도 추가 설치 없음.
-# NullDbWriter 로 갈 때는 미설치라도 동작 (db_writer 안 import 자체는 통과).
+# ─── DB writer (Tier 1, TimescaleDB) ──────────────────────────────────────────
+# services/realtime/db_writer.py + services/auth/users.py + app.py 의 audit conn.
+# [binary] = libpq 동봉 — Windows 포함 어디서나 추가 설치 없음.
+# NullDbWriter 경로에서는 미설치라도 동작 (import 자체는 lazy).
 psycopg[binary]>=3.2
 
-# Notebook-only (선택): seaborn 은 notebooks/* 에서만 사용. 학습/UI/워커 런타임 미사용.
+# ─── Dev / Test ───────────────────────────────────────────────────────────────
+# tests/ — 84 케이스 (smoke + auth + API + E2E). 외부 의존 0.
+# Docker 이미지에는 tests/ 가 .dockerignore 로 제외되어 런타임 부담 없음 (이미지 크기 영향 미미).
+pytest>=9.0
+
+# ─── Notebook-only (선택 — 미포함) ─────────────────────────────────────────────
+# seaborn 은 notebooks/* 시각화에서만 사용. 학습/UI/워커 런타임 미사용.
 # 필요시: pip install seaborn>=0.13
